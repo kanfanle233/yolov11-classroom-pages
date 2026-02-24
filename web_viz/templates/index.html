@@ -388,6 +388,7 @@
     const Store = {
         state: {
             caseList: [],
+            caseMap: {},
             currentCaseId: null,
             timelineData: [], // Persons
             groupData: [],
@@ -410,8 +411,25 @@
         async loadCaseList() {
             try {
                 const res = await fetch(`${CONFIG.API_BASE}/list_cases`).then(r=>r.json());
-                this.state.caseList = Array.isArray(res) ? res : [];
-            } catch(e) { console.error(e); this.state.caseList = []; }
+                const rawList = Array.isArray(res) ? res : [];
+                const normalized = rawList.map((item) => {
+                    if (typeof item === "string") {
+                        return { view: "", video_id: item, case_id: item.includes("__") ? item.split("__").pop() : item, path: "" };
+                    }
+                    return {
+                        view: item?.view || "",
+                        video_id: item?.video_id || "",
+                        case_id: item?.case_id || ((item?.video_id || "").split("__").pop() || ""),
+                        path: item?.path || "",
+                    };
+                }).filter(x => x.video_id);
+                this.state.caseList = normalized;
+                this.state.caseMap = Object.fromEntries(normalized.map(x => [x.video_id, x]));
+            } catch(e) {
+                console.error(e);
+                this.state.caseList = [];
+                this.state.caseMap = {};
+            }
             this.notify("caseListLoaded");
         },
 
@@ -422,7 +440,7 @@
             this.state.selectedTrackId = null; // Reset selection
             this.notify("loadingStart");
 
-            this.state.videoUrls = await resolveVideoUrls(caseId);
+            this.state.videoUrls = await resolveVideoUrls(caseId, this.state.caseMap[caseId]);
 
             try {
                 const [tl, tr, trk, st] = await Promise.all([
@@ -485,22 +503,39 @@
     };
 
     // ====== UTILS ======
-    async function resolveVideoUrls(caseId) {
+    async function resolveVideoUrls(caseId, caseMeta = null) {
         let base = CONFIG.API_BASE.startsWith("http") ? CONFIG.API_BASE.replace(/\/api\/?$/, "") : "";
-        const urls = {
-            original: [`/videos/${caseId}.mp4`],
-            overlay: [`/outputs/${caseId}/${caseId}_overlay.mp4`, `/outputs/${caseId}_overlay.mp4`],
-            pose: [`/outputs/${caseId}/pose_demo_out.mp4`]
-        };
         const res = {};
-        for(let k in urls) {
-            for(let u of urls[k]) {
-                try {
-                    let r = await fetch(base + u, {method:'HEAD'});
-                    if(r.ok && (r.headers.get("content-type")||"").includes("video")) { res[k] = base+u; break; }
-                } catch(e){}
+
+        try {
+            const media = await fetch(`${CONFIG.API_BASE}/media/${encodeURIComponent(caseId)}`).then(r => r.ok ? r.json() : null);
+            if (media) {
+                if (media.overlay) res.overlay = base + media.overlay;
+                if (media.pose_demo) res.pose = base + media.pose_demo;
+                if (media.objects_demo) res.objects = base + media.objects_demo;
             }
+        } catch (e) {
+            console.warn("media endpoint unavailable", e);
         }
+
+        const originalCandidates = [];
+        if (caseMeta && caseMeta.view && caseMeta.case_id) {
+            originalCandidates.push(`/data/智慧课堂学生行为数据集/${caseMeta.view}/${caseMeta.case_id}.mp4`);
+        }
+        originalCandidates.push(`/videos/${caseId}.mp4`);
+
+        for (const u of originalCandidates) {
+            try {
+                const r = await fetch(base + u, { method: "HEAD" });
+                const contentType = (r.headers.get("content-type") || "").toLowerCase();
+                const isVideo = contentType.includes("video") || contentType.includes("octet-stream");
+                if (r.ok && (isVideo || !contentType)) {
+                    res.original = base + u;
+                    break;
+                }
+            } catch (e) {}
+        }
+
         return res;
     }
 
@@ -621,10 +656,12 @@
         const c = document.getElementById("video-list-container");
         c.innerHTML = "";
         if(state.caseList.length===0) c.innerHTML = `<div class="empty-tip">No videos found</div>`;
-        state.caseList.forEach(id => {
-            c.innerHTML += `<div class="list-item" data-id="${id}"><i class="fa-regular fa-file-video"></i> ${id}</div>`;
+        state.caseList.forEach(item => {
+            const id = item.video_id;
+            const label = item.view ? `${item.view} / ${id}` : id;
+            c.innerHTML += `<div class="list-item" data-id="${id}"><i class="fa-regular fa-file-video"></i> ${label}</div>`;
         });
-        if(state.caseList.length) Store.selectCase(state.caseList[0]);
+        if(state.caseList.length) Store.selectCase(state.caseList[0].video_id);
     });
 
     Store.subscribe("loadingStart", () => {

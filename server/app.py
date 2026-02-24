@@ -3,6 +3,7 @@ import sys
 import json
 from pathlib import Path
 from functools import lru_cache
+import inspect
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -94,6 +95,37 @@ if STATIC_DIR.exists():
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 
+def _find_case_dir(video_id: str) -> Optional[Path]:
+    """Find case directory by exact folder name, supporting nested view/case layout."""
+    direct = OUTPUT_DIR / video_id
+    if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
+        return direct
+    if not OUTPUT_DIR.exists():
+        return None
+    for candidate in OUTPUT_DIR.rglob(video_id):
+        if candidate.is_dir() and _looks_like_case_dir(candidate):
+            return candidate
+    return None
+
+
+def _to_output_url(path: Path) -> str:
+    rel = path.resolve().relative_to(OUTPUT_DIR)
+    return f"/output/{rel.as_posix()}"
+
+
+def _looks_like_case_dir(case_dir: Path) -> bool:
+    """Heuristic: a runnable case folder should contain at least one core pipeline artifact."""
+    markers = [
+        "timeline_chart.json",
+        "per_person_sequences.json",
+        "pose_tracks_smooth.jsonl",
+        "actions.jsonl",
+        "actions_fused.jsonl",
+        "student_projection.json",
+    ]
+    return any((case_dir / m).exists() for m in markers)
+
+
 # =========================================================
 # 3) 小工具：简易 Levenshtein（无三方库时兜底）
 # =========================================================
@@ -122,18 +154,49 @@ def simple_levenshtein(seq1: str, seq2: str) -> float:
     return float(matrix[size_x - 1, size_y - 1])
 
 
+def _supports_param(cls, param: str) -> bool:
+    try:
+        return param in inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _make_mds(dissimilarity: str, random_state: int = 42):
+    kwargs = {"n_components": 2, "dissimilarity": dissimilarity, "random_state": random_state}
+    if _supports_param(MDS, "n_jobs"):
+        kwargs["n_jobs"] = -1
+    return MDS(**kwargs)
+
+
+def _fit_tsne(data: np.ndarray, metric: str, random_state: int = 42) -> np.ndarray:
+    n_samples = data.shape[0]
+    perp = min(30, max(5, n_samples - 1))
+    kwargs = {
+        "n_components": 2,
+        "perplexity": perp,
+        "metric": metric,
+        "random_state": random_state,
+    }
+    if _supports_param(TSNE, "n_jobs"):
+        kwargs["n_jobs"] = -1
+    return TSNE(**kwargs).fit_transform(data)
+
+
 # =========================================================
 # 4) 缓存读取：timeline/stats/transcript/tracks
 # =========================================================
 @lru_cache(maxsize=32)
 def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
+    case_dir = _find_case_dir(video_id)
+    if case_dir is None:
+        return None
     # 先找 timeline_chart.json（你现在 step10 生成的是 *.json，结构 {"items": [...]}） :contentReference[oaicite:4]{index=4}
-    p1 = OUTPUT_DIR / video_id / "timeline_chart.json"
+    p1 = case_dir / "timeline_chart.json"
     if p1.exists():
         return json.loads(p1.read_text(encoding="utf-8"))
 
     # 回退 timeline_data.json
-    p2 = OUTPUT_DIR / video_id / "timeline_data.json"
+    p2 = case_dir / "timeline_data.json"
     if p2.exists():
         return json.loads(p2.read_text(encoding="utf-8"))
 
@@ -142,7 +205,10 @@ def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
 
 @lru_cache(maxsize=32)
 def load_stats_data_cached(video_id: str) -> Dict[str, Any]:
-    p = OUTPUT_DIR / video_id / "timeline_chart_stats.json"
+    case_dir = _find_case_dir(video_id)
+    if case_dir is None:
+        return {"class_pie_chart": []}
+    p = case_dir / "timeline_chart_stats.json"
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
@@ -153,7 +219,10 @@ def load_stats_data_cached(video_id: str) -> Dict[str, Any]:
 
 @lru_cache(maxsize=32)
 def load_transcript_data_cached(video_id: str) -> List[Dict[str, Any]]:
-    p = OUTPUT_DIR / video_id / "transcript.jsonl"
+    case_dir = _find_case_dir(video_id)
+    if case_dir is None:
+        return []
+    p = case_dir / "transcript.jsonl"
     data: List[Dict[str, Any]] = []
     if p.exists():
         with p.open("r", encoding="utf-8") as f:
@@ -177,7 +246,10 @@ def load_tracks_data_cached(video_id: str) -> Dict[str, Any]:
       "13": ...
     }
     """
-    p = OUTPUT_DIR / video_id / "pose_tracks_smooth.jsonl"
+    case_dir = _find_case_dir(video_id)
+    if case_dir is None:
+        return {}
+    p = case_dir / "pose_tracks_smooth.jsonl"
     if not p.exists():
         return {}
 
@@ -270,16 +342,9 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
         if method == "pca":
             coords = PCA(n_components=2).fit_transform(X)
         elif method == "mds":
-            coords = MDS(n_components=2, dissimilarity="euclidean", random_state=42, n_jobs=-1).fit_transform(X)
+            coords = _make_mds("euclidean", random_state=42).fit_transform(X)
         elif method == "tsne":
-            perp = min(30, max(5, n_samples - 1))
-            coords = TSNE(
-                n_components=2,
-                perplexity=perp,
-                metric="euclidean",
-                random_state=42,
-                n_jobs=-1,
-            ).fit_transform(X)
+            coords = _fit_tsne(X, metric="euclidean", random_state=42)
         else:
             # 不认识就回退
             coords = PCA(n_components=2).fit_transform(X)
@@ -309,28 +374,11 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
             method = "mds"
 
         if method == "mds":
-            coords = MDS(
-                n_components=2,
-                dissimilarity="precomputed",
-                random_state=42,
-                n_jobs=-1
-            ).fit_transform(dist_matrix)
+            coords = _make_mds("precomputed", random_state=42).fit_transform(dist_matrix)
         elif method == "tsne":
-            perp = min(30, max(5, n_samples - 1))
-            coords = TSNE(
-                n_components=2,
-                perplexity=perp,
-                metric="precomputed",
-                random_state=42,
-                n_jobs=-1
-            ).fit_transform(dist_matrix)
+            coords = _fit_tsne(dist_matrix, metric="precomputed", random_state=42)
         else:
-            coords = MDS(
-                n_components=2,
-                dissimilarity="precomputed",
-                random_state=42,
-                n_jobs=-1
-            ).fit_transform(dist_matrix)
+            coords = _make_mds("precomputed", random_state=42).fit_transform(dist_matrix)
 
     else:
         # 未知 metric
@@ -375,11 +423,85 @@ def list_cases():
     """
     if not OUTPUT_DIR.exists():
         return []
-    cases = []
-    for d in OUTPUT_DIR.iterdir():
-        if d.is_dir():
-            cases.append(d.name)
-    return sorted(cases)
+    # 递归扫描“真正的 case 目录”，避免把“教师视角/斜上方视角1”这种视角父目录误当成 case。
+    case_dirs = [d for d in OUTPUT_DIR.rglob("*") if d.is_dir() and _looks_like_case_dir(d)]
+    cases: List[Dict[str, str]] = []
+    for case_dir in case_dirs:
+        rel_parts = case_dir.relative_to(OUTPUT_DIR).parts
+        view_name = ""
+        if len(rel_parts) >= 2:
+            # 新结构通常是 .../<view>/<video_id>
+            view_name = rel_parts[-2]
+        video_id = case_dir.name
+        cases.append({
+            "view": view_name,
+            "video_id": video_id,
+            "case_id": video_id.split("__")[-1],
+            "path": str(case_dir),
+        })
+
+    # 去重（同名 video_id 可能出现在不同缓存目录）
+    uniq: Dict[str, Dict[str, str]] = {}
+    for c in cases:
+        key = c["video_id"]
+        if key not in uniq or len(c["path"]) < len(uniq[key]["path"]):
+            uniq[key] = c
+
+    return sorted(list(uniq.values()), key=lambda x: (x["view"], x["video_id"]))
+
+
+@app.get("/api/media/{video_id}")
+def get_media(video_id: str):
+    case_dir = _find_case_dir(video_id)
+    if case_dir is None:
+        raise HTTPException(404, f"Case not found: {video_id}")
+
+    overlay_candidates = sorted(case_dir.glob("*_overlay.mp4"))
+    overlay = overlay_candidates[0] if overlay_candidates else None
+
+    payload = {
+        "video_id": case_dir.name,
+        "view": case_dir.parent.name if case_dir.parent != OUTPUT_DIR else "",
+        "overlay": _to_output_url(overlay) if overlay and overlay.exists() else None,
+        "pose_demo": _to_output_url(case_dir / "pose_demo_out.mp4") if (case_dir / "pose_demo_out.mp4").exists() else None,
+        "objects_demo": _to_output_url(case_dir / "objects_demo_out.mp4") if (case_dir / "objects_demo_out.mp4").exists() else None,
+        "timeline_png": _to_output_url(case_dir / "timeline_chart.png") if (case_dir / "timeline_chart.png").exists() else None,
+        "projection_json": _to_output_url(case_dir / "student_projection.json") if (case_dir / "student_projection.json").exists() else None,
+        "actions": _to_output_url(case_dir / "actions_fused.jsonl") if (case_dir / "actions_fused.jsonl").exists() else (
+            _to_output_url(case_dir / "actions.jsonl") if (case_dir / "actions.jsonl").exists() else None
+        ),
+    }
+    return payload
+
+
+@app.get("/api/case/{video_id}/manifest")
+def get_case_manifest(video_id: str):
+    case_dir = _find_case_dir(video_id)
+    if case_dir is None:
+        raise HTTPException(404, f"Case not found: {video_id}")
+
+    expected = [
+        "actions.jsonl", "actions_fused.jsonl", "transcript.jsonl", "pose_tracks_smooth.jsonl",
+        "pose_demo_out.mp4", "objects_demo_out.mp4", "student_projection.json", "timeline_chart.json",
+        "timeline_chart.png", "group_events.jsonl", "per_person_sequences.json", "embeddings.pkl",
+    ]
+    files = []
+    for name in expected:
+        p = case_dir / name
+        files.append({
+            "name": name,
+            "exists": p.exists(),
+            "size": int(p.stat().st_size) if p.exists() else 0,
+            "url": _to_output_url(p) if p.exists() else None,
+        })
+
+    return {
+        "video_id": case_dir.name,
+        "view": case_dir.parent.name if case_dir.parent != OUTPUT_DIR else "",
+        "path": str(case_dir),
+        "files": files,
+        "ready_for_frontend": any(f["name"] == "timeline_chart.json" and f["exists"] for f in files),
+    }
 
 
 @app.get("/api/config")

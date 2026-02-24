@@ -3,6 +3,7 @@ import pickle
 import json
 import numpy as np
 from pathlib import Path
+from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
@@ -78,8 +79,9 @@ def main():
         out_path = (base_dir / out_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if len(X) < 3 or umap is None:
-        print("Not enough data for UMAP or umap-learn missing. Writing empty result.")
+    n_samples = int(len(X))
+    if n_samples < 1:
+        print("No embedding samples found. Writing empty result.")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump([], f)
         return
@@ -87,20 +89,38 @@ def main():
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # === UMAP 降维 ===
-    print(f"[2/4] Running UMAP (metric={args.metric})...")
-    reducer = umap.UMAP(
-        n_neighbors=args.n_neighbors,
-        min_dist=args.min_dist,
-        metric=args.metric,
-        n_components=2,
-        random_state=42
-    )
-    embedding_2d = reducer.fit_transform(X_scaled)
+    # === 降维：优先 UMAP，小样本或异常时自动回退到 PCA ===
+    use_umap = umap is not None and n_samples >= 4
+    if use_umap:
+        n_neighbors = min(int(args.n_neighbors), max(2, n_samples - 1))
+        print(f"[2/4] Running UMAP (metric={args.metric}, n_neighbors={n_neighbors})...")
+        reducer = umap.UMAP(
+            n_neighbors=n_neighbors,
+            min_dist=args.min_dist,
+            metric=args.metric,
+            n_components=2,
+            random_state=42,
+            init="random",
+        )
+        try:
+            embedding_2d = reducer.fit_transform(X_scaled)
+        except Exception as e:
+            print(f"[WARN] UMAP failed ({e}). Falling back to PCA(2).")
+            pca = PCA(n_components=2, random_state=42)
+            embedding_2d = pca.fit_transform(X_scaled)
+    else:
+        reason = "umap-learn missing" if umap is None else f"too few samples (N={n_samples})"
+        print(f"[2/4] Skip UMAP: {reason}. Using PCA(2).")
+        if n_samples == 1:
+            embedding_2d = np.array([[0.0, 0.0]], dtype=float)
+        else:
+            pca = PCA(n_components=2, random_state=42)
+            embedding_2d = pca.fit_transform(X_scaled)
 
     # === 聚类 ===
-    print(f"[3/4] Running Clustering (KMeans, k={args.n_clusters})...")
-    kmeans = KMeans(n_clusters=args.n_clusters, random_state=42)
+    n_clusters = max(1, min(int(args.n_clusters), n_samples))
+    print(f"[3/4] Running Clustering (KMeans, k={n_clusters})...")
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
     labels = kmeans.fit_predict(X_scaled)
 
     # === 输出 ===

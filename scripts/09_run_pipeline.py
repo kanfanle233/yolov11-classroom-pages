@@ -214,6 +214,10 @@ def main():
     parser.add_argument("--pose_model", type=str, default="yolo11s-pose.pt")
     parser.add_argument("--det_model", type=str, default="yolo11s.pt")
     parser.add_argument("--action_model", type=str, default="", help="Optional: SlowFast weights")
+    parser.add_argument("--fuse_action_obj", type=int, default=1, help="1=run action/object fusion after step05")
+    parser.add_argument("--fuse_window", type=float, default=0.8, help="fusion time window in seconds")
+    parser.add_argument("--fuse_alpha", type=float, default=0.75, help="SlowFast weight in fusion")
+    parser.add_argument("--fuse_beta", type=float, default=0.25, help="Object evidence weight in fusion")
     parser.add_argument("--stgcn_weight", type=str, default="", help="Optional: ST-GCN weights")
 
     # Parameters
@@ -240,6 +244,7 @@ def main():
     pose_demo_video = out_dir / "pose_demo_out.mp4"
 
     actions_jsonl = out_dir / "actions.jsonl"
+    actions_fused_jsonl = out_dir / "actions_fused.jsonl"
     embeddings_pkl = out_dir / "embeddings.pkl"
 
     transcript_jsonl = out_dir / "transcript.jsonl"
@@ -298,23 +303,37 @@ def main():
               args.force,
               args.from_step, _run05)
 
+    # Step 05.5: Action/Object Fusion
+    if int(args.fuse_action_obj) == 1:
+        maybe_run(55, "Action/Object Fusion", [actions_fused_jsonl], [actions_jsonl, objects_jsonl],
+                  args.force, args.from_step,
+                  lambda: run_step(py, scripts_dir / "05b_fuse_actions_with_objects.py",
+                                   ["--actions", str(actions_jsonl),
+                                    "--objects", str(objects_jsonl),
+                                    "--out", str(actions_fused_jsonl),
+                                    "--window", str(args.fuse_window),
+                                    "--alpha", str(args.fuse_alpha),
+                                    "--beta", str(args.fuse_beta)]))
+
+    actions_for_downstream = actions_fused_jsonl if actions_fused_jsonl.exists() else actions_jsonl
+
     # Step 06: ASR
     maybe_run(6, "ASR", [transcript_jsonl], [video_path], args.force, args.from_step,
               lambda: run_step(py, scripts_dir / "06_api_asr_realtime.py",
                                ["--video", str(video_path), "--out_dir", str(out_dir)]))
 
     # Step 07: Merge Data
-    maybe_run(7, "Merge Data", [per_person_json], [actions_jsonl, transcript_jsonl], args.force, args.from_step,
+    maybe_run(7, "Merge Data", [per_person_json], [actions_for_downstream, transcript_jsonl], args.force, args.from_step,
               lambda: run_step(py, scripts_dir / "07_dual_verification.py",
-                               ["--actions", str(actions_jsonl), "--transcript", str(transcript_jsonl), "--out",
+                               ["--actions", str(actions_for_downstream), "--transcript", str(transcript_jsonl), "--out",
                                 str(per_person_json), "--fps", fps_str]))
 
     # Step 08: Overlay Video
     if not args.skip_video:
-        maybe_run(8, "Overlay Video", [overlay_video], [video_path, actions_jsonl, transcript_jsonl], args.force,
+        maybe_run(8, "Overlay Video", [overlay_video], [video_path, actions_for_downstream, transcript_jsonl], args.force,
                   args.from_step,
                   lambda: run_step(py, scripts_dir / "08_overlay_sequences.py",
-                                   ["--video", str(video_path), "--actions", str(actions_jsonl), "--transcript",
+                                   ["--video", str(video_path), "--actions", str(actions_for_downstream), "--transcript",
                                     str(transcript_jsonl), "--out_dir", str(out_dir), "--name", name, "--mux_audio",
                                     "1", "--out_video", str(overlay_video)]))
 
@@ -390,7 +409,7 @@ def main():
             video_id=video_id,
             view_name=view_name,
             pose_tracks=pose_tracks,
-            actions_jsonl=actions_jsonl,
+            actions_jsonl=actions_for_downstream,
             overlay_video=overlay_video,
             timeline_png=timeline_png,
             fps_hint=args.fps,

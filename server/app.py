@@ -98,15 +98,12 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 def _find_case_dir(video_id: str) -> Optional[Path]:
     """Find case directory by exact folder name, supporting nested view/case layout."""
     direct = OUTPUT_DIR / video_id
-    if direct.exists() and direct.is_dir():
+    if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
         return direct
     if not OUTPUT_DIR.exists():
         return None
-    for view_dir in OUTPUT_DIR.iterdir():
-        if not view_dir.is_dir():
-            continue
-        candidate = view_dir / video_id
-        if candidate.exists() and candidate.is_dir():
+    for candidate in OUTPUT_DIR.rglob(video_id):
+        if candidate.is_dir() and _looks_like_case_dir(candidate):
             return candidate
     return None
 
@@ -114,6 +111,19 @@ def _find_case_dir(video_id: str) -> Optional[Path]:
 def _to_output_url(path: Path) -> str:
     rel = path.resolve().relative_to(OUTPUT_DIR)
     return f"/output/{rel.as_posix()}"
+
+
+def _looks_like_case_dir(case_dir: Path) -> bool:
+    """Heuristic: a runnable case folder should contain at least one core pipeline artifact."""
+    markers = [
+        "timeline_chart.json",
+        "per_person_sequences.json",
+        "pose_tracks_smooth.jsonl",
+        "actions.jsonl",
+        "actions_fused.jsonl",
+        "student_projection.json",
+    ]
+    return any((case_dir / m).exists() for m in markers)
 
 
 # =========================================================
@@ -413,29 +423,31 @@ def list_cases():
     """
     if not OUTPUT_DIR.exists():
         return []
+    # 递归扫描“真正的 case 目录”，避免把“教师视角/斜上方视角1”这种视角父目录误当成 case。
+    case_dirs = [d for d in OUTPUT_DIR.rglob("*") if d.is_dir() and _looks_like_case_dir(d)]
     cases: List[Dict[str, str]] = []
-    for first in OUTPUT_DIR.iterdir():
-        if not first.is_dir():
-            continue
-        # 新布局：output/<view>/<video_id>
-        nested = [d for d in first.iterdir() if d.is_dir()]
-        if nested:
-            for case_dir in nested:
-                cases.append({
-                    "view": first.name,
-                    "video_id": case_dir.name,
-                    "case_id": case_dir.name.split("__")[-1],
-                    "path": str(case_dir),
-                })
-        else:
-            # 兼容旧布局：output/<video_id>
-            cases.append({
-                "view": "",
-                "video_id": first.name,
-                "case_id": first.name.split("__")[-1],
-                "path": str(first),
-            })
-    return sorted(cases, key=lambda x: (x["view"], x["video_id"]))
+    for case_dir in case_dirs:
+        rel_parts = case_dir.relative_to(OUTPUT_DIR).parts
+        view_name = ""
+        if len(rel_parts) >= 2:
+            # 新结构通常是 .../<view>/<video_id>
+            view_name = rel_parts[-2]
+        video_id = case_dir.name
+        cases.append({
+            "view": view_name,
+            "video_id": video_id,
+            "case_id": video_id.split("__")[-1],
+            "path": str(case_dir),
+        })
+
+    # 去重（同名 video_id 可能出现在不同缓存目录）
+    uniq: Dict[str, Dict[str, str]] = {}
+    for c in cases:
+        key = c["video_id"]
+        if key not in uniq or len(c["path"]) < len(uniq[key]["path"]):
+            uniq[key] = c
+
+    return sorted(list(uniq.values()), key=lambda x: (x["view"], x["video_id"]))
 
 
 @app.get("/api/media/{video_id}")

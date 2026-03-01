@@ -367,7 +367,6 @@
         API_BASE: (window.location.protocol === 'file:' || window.location.href.includes('scf.usercontent.goog'))
                   ? 'http://localhost:8000/api'
                   : '/api',
-        STATIC_MANIFEST: './data/manifest.json',
         ACTION_NAMES: {
             0: "Listen", 1: "Distract", 2: "Phone", 3: "Doze", 4: "Chat",
             5: "Note", 6: "Raise", 7: "Stand", 8: "Read"
@@ -382,118 +381,6 @@
             "discussion": "#d6eaf8",
             "break": "#fadbd8",
             "individual_work": "#f6ddcc"
-        }
-    };
-
-    const DataSource = {
-        mode: 'api',
-        manifest: null,
-
-        async init() {
-            try {
-                const r = await fetch(CONFIG.STATIC_MANIFEST, { cache: 'no-cache' });
-                if (r.ok) {
-                    const m = await r.json();
-                    if (m && Array.isArray(m.cases)) {
-                        this.mode = 'static';
-                        this.manifest = m;
-                        console.log('[DataSource] static mode');
-                        return;
-                    }
-                }
-            } catch (e) {}
-            this.mode = 'api';
-            console.log('[DataSource] api mode');
-        },
-
-        _caseById(caseId) {
-            if (!this.manifest || !Array.isArray(this.manifest.cases)) return null;
-            return this.manifest.cases.find(c => c && c.video_id === caseId) || null;
-        },
-
-        async listCases() {
-            if (this.mode === 'static' && this.manifest) {
-                return this.manifest.cases;
-            }
-            return fetch(`${CONFIG.API_BASE}/list_cases`).then(r => r.json());
-        },
-
-        async media(caseId) {
-            if (this.mode === 'static') {
-                const c = this._caseById(caseId);
-                if (!c || !c.paths) return null;
-                return {
-                    video_id: c.video_id,
-                    view: c.view || '',
-                    overlay: c.paths.video_overlay || c.paths.video_original || null,
-                    pose_demo: c.paths.video_pose || null,
-                    objects_demo: c.paths.video_objects || null,
-                };
-            }
-            return fetch(`${CONFIG.API_BASE}/media/${encodeURIComponent(caseId)}`).then(r => r.ok ? r.json() : null);
-        },
-
-        async timeline(caseId) {
-            if (this.mode === 'static') {
-                const c = this._caseById(caseId);
-                if (!c?.paths?.timeline) return { items: [] };
-                return fetch(c.paths.timeline).then(r => r.ok ? r.json() : { items: [] });
-            }
-            return fetch(`${CONFIG.API_BASE}/timeline/${caseId}`).then(r => r.json());
-        },
-
-        async transcript(caseId) {
-            if (this.mode === 'static') {
-                const c = this._caseById(caseId);
-                if (!c?.paths?.transcript) return [];
-                try {
-                    const text = await fetch(c.paths.transcript).then(r => r.ok ? r.text() : '');
-                    return text.split('\n').map(x => x.trim()).filter(Boolean).map(x => JSON.parse(x));
-                } catch (e) {
-                    return [];
-                }
-            }
-            return fetch(`${CONFIG.API_BASE}/transcript/${caseId}`).then(r => r.json());
-        },
-
-        async tracks(caseId) {
-            if (this.mode === 'static') {
-                const c = this._caseById(caseId);
-                if (!c?.paths?.tracks) return {};
-                try {
-                    const text = await fetch(c.paths.tracks).then(r => r.ok ? r.text() : '');
-                    const out = {};
-                    text.split('\n').map(x => x.trim()).filter(Boolean).forEach(line => {
-                        const d = JSON.parse(line);
-                        const frame = d.frame;
-                        out[String(frame)] = (d.persons || []).map(pp => ({ id: pp.track_id, box: pp.bbox }));
-                    });
-                    return out;
-                } catch (e) {
-                    return {};
-                }
-            }
-            return fetch(`${CONFIG.API_BASE}/tracks/${caseId}`).then(r => r.json());
-        },
-
-        async stats(caseId) {
-            if (this.mode === 'static') {
-                const c = this._caseById(caseId);
-                if (!c?.paths?.stats) return {};
-                return fetch(c.paths.stats).then(r => r.ok ? r.json() : {});
-            }
-            return fetch(`${CONFIG.API_BASE}/stats/${caseId}`).then(r => r.json());
-        },
-
-        async projection(caseId, method, metric) {
-            if (this.mode === 'static') {
-                const c = this._caseById(caseId);
-                if (!c?.paths?.projection) return { method, metric, points: [] };
-                const arr = await fetch(c.paths.projection).then(r => r.ok ? r.json() : []);
-                const points = Array.isArray(arr) ? arr.map(x => ({ track_id: x.track_id, x: x.x, y: x.y })) : [];
-                return { method, metric, points };
-            }
-            return fetch(`${CONFIG.API_BASE}/projection/${caseId}?method=${method}&metric=${metric}`).then(r => r.json());
         }
     };
 
@@ -523,7 +410,7 @@
 
         async loadCaseList() {
             try {
-                const res = await DataSource.listCases();
+                const res = await fetch(`${CONFIG.API_BASE}/list_cases`).then(r=>r.json());
                 const rawList = Array.isArray(res) ? res : [];
                 const normalized = rawList.map((item) => {
                     if (typeof item === "string") {
@@ -557,10 +444,10 @@
 
             try {
                 const [tl, tr, trk, st] = await Promise.all([
-                    DataSource.timeline(caseId).catch(()=>({})),
-                    DataSource.transcript(caseId).catch(()=>([])),
-                    DataSource.tracks(caseId).catch(()=>({})),
-                    DataSource.stats(caseId).catch(()=>({}))
+                    fetch(`${CONFIG.API_BASE}/timeline/${caseId}`).then(r=>r.json()).catch(()=>({})),
+                    fetch(`${CONFIG.API_BASE}/transcript/${caseId}`).then(r=>r.json()).catch(()=>([])),
+                    fetch(`${CONFIG.API_BASE}/tracks/${caseId}`).then(r=>r.json()).catch(()=>({})),
+                    fetch(`${CONFIG.API_BASE}/stats/${caseId}`).then(r=>r.json()).catch(()=>({}))
                 ]);
 
                 // Normalize Timeline
@@ -606,7 +493,7 @@
             if(!caseId) return;
             document.getElementById("projection-chart").innerHTML = '<div style="text-align:center;padding:50px;color:#aaa;">Running Dimensionality Reduction...</div>';
             try {
-                const res = await DataSource.projection(caseId, method, metric);
+                const res = await fetch(`${CONFIG.API_BASE}/projection/${caseId}?method=${method}&metric=${metric}`).then(r=>r.json());
                 this.state.projectionData = res;
                 this.notify("projectionLoaded");
             } catch(e) {
@@ -621,12 +508,11 @@
         const res = {};
 
         try {
-            const media = await DataSource.media(caseId);
+            const media = await fetch(`${CONFIG.API_BASE}/media/${encodeURIComponent(caseId)}`).then(r => r.ok ? r.json() : null);
             if (media) {
                 if (media.overlay) res.overlay = base + media.overlay;
                 if (media.pose_demo) res.pose = base + media.pose_demo;
                 if (media.objects_demo) res.objects = base + media.objects_demo;
-                if (media.original) res.original = base + media.original;
             }
         } catch (e) {
             console.warn("media endpoint unavailable", e);
@@ -675,8 +561,7 @@
     }
 
     // ====== INIT ======
-    document.addEventListener("DOMContentLoaded", async () => {
-        await DataSource.init();
+    document.addEventListener("DOMContentLoaded", () => {
         Store.loadCaseList();
         renderLegends(); // Render static legends
 

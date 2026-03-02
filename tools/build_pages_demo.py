@@ -57,6 +57,7 @@ def main() -> None:
     parser.add_argument("--demo_root", required=True, help="Path to output/.../_demo_web")
     parser.add_argument("--docs_root", default="docs", help="Pages root folder")
     parser.add_argument("--views", default="", help="Comma-separated views to include")
+    parser.add_argument("--case_ids", default="", help="Comma-separated video_id list to include (exact match)")
     parser.add_argument("--limit", type=int, default=10, help="Max cases to include")
     parser.add_argument("--clean", action="store_true", help="Clean docs/data and docs/assets/videos before copy")
     args = parser.parse_args()
@@ -75,8 +76,15 @@ def main() -> None:
     videos_root.mkdir(parents=True, exist_ok=True)
 
     views = [v.strip() for v in args.views.split(",") if v.strip()] if args.views else None
+    case_ids = [c.strip() for c in args.case_ids.split(",") if c.strip()] if args.case_ids else []
 
     case_dirs = find_cases(demo_root, views)
+    if case_ids:
+        allow = set(case_ids)
+        case_dirs = [c for c in case_dirs if c.name in allow]
+        # Keep user-specified order when possible
+        rank = {cid: i for i, cid in enumerate(case_ids)}
+        case_dirs = sorted(case_dirs, key=lambda c: rank.get(c.name, 10**9))
     if args.limit > 0:
         case_dirs = case_dirs[: args.limit]
 

@@ -367,6 +367,7 @@
         API_BASE: (window.location.protocol === 'file:' || window.location.href.includes('scf.usercontent.goog'))
                   ? 'http://localhost:8000/api'
                   : '/api',
+        STATIC_MANIFEST: './data/manifest.json',
         STATIC_MANIFEST_CANDIDATES: [
             './data/manifest.json',
             '/data/manifest.json',
@@ -402,12 +403,23 @@
         return r.json();
     }
 
+    function getManifestCandidates() {
+        const path = window.location.pathname || '/';
+        const baseDir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1);
+        const dynamic = [
+            `${baseDir}data/manifest.json`,
+            `${baseDir}../data/manifest.json`
+        ];
+        const merged = [CONFIG.STATIC_MANIFEST, ...dynamic, ...CONFIG.STATIC_MANIFEST_CANDIDATES];
+        return [...new Set(merged)];
+    }
+
     const DataSource = {
         mode: 'api',
         manifest: null,
 
         async init() {
-            for (const manifestUrl of CONFIG.STATIC_MANIFEST_CANDIDATES) {
+            for (const manifestUrl of getManifestCandidates()) {
                 try {
                     const m = await fetchJsonStrict(manifestUrl);
                     if (m && Array.isArray(m.cases)) {
@@ -421,8 +433,6 @@
                 }
             }
 
-            // Validate API endpoint up front so users see a clear error instead of JSON parse failure.
-            await fetchJsonStrict(`${CONFIG.API_BASE}/list_cases`);
             this.mode = 'api';
             console.log('[DataSource] api mode');
         },

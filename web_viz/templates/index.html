@@ -371,7 +371,6 @@
         STATIC_MANIFEST_CANDIDATES: [
             './data/manifest.json',
             '/data/manifest.json',
-            '/docs/data/manifest.json'
         ],
         ACTION_NAMES: {
             0: "Listen", 1: "Distract", 2: "Phone", 3: "Doze", 4: "Chat",
@@ -667,7 +666,7 @@
         if (caseMeta && caseMeta.view && caseMeta.case_id) {
             originalCandidates.push(`/data/智慧课堂学生行为数据集/${caseMeta.view}/${caseMeta.case_id}.mp4`);
         }
-        originalCandidates.push(`/videos/${caseId}.mp4`);
+        originalCandidates.push(`/assets/videos/${caseId}.mp4`);
 
         for (const u of originalCandidates) {
             try {

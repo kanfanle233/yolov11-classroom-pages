@@ -455,6 +455,7 @@
                 return {
                     video_id: c.video_id,
                     view: c.view || '',
+                    original: c.paths.video_original || c.paths.video_overlay || null,
                     overlay: c.paths.video_overlay || c.paths.video_original || null,
                     pose_demo: c.paths.video_pose || null,
                     objects_demo: c.paths.video_objects || null,
@@ -662,22 +663,23 @@
             console.warn("media endpoint unavailable", e);
         }
 
-        const originalCandidates = [];
-        if (caseMeta && caseMeta.view && caseMeta.case_id) {
-            originalCandidates.push(`/data/智慧课堂学生行为数据集/${caseMeta.view}/${caseMeta.case_id}.mp4`);
-        }
-        originalCandidates.push(`/assets/videos/${caseId}.mp4`);
+        if (!res.original) {
+            const originalCandidates = [`/assets/videos/${caseId}.mp4`];
+            if (caseMeta && caseMeta.view && caseMeta.case_id) {
+                originalCandidates.push(`/data/智慧课堂学生行为数据集/${caseMeta.view}/${caseMeta.case_id}.mp4`);
+            }
 
-        for (const u of originalCandidates) {
-            try {
-                const r = await fetch(base + u, { method: "HEAD" });
-                const contentType = (r.headers.get("content-type") || "").toLowerCase();
-                const isVideo = contentType.includes("video") || contentType.includes("octet-stream");
-                if (r.ok && (isVideo || !contentType)) {
-                    res.original = base + u;
-                    break;
-                }
-            } catch (e) {}
+            for (const u of originalCandidates) {
+                try {
+                    const r = await fetch(base + u, { method: "HEAD" });
+                    const contentType = (r.headers.get("content-type") || "").toLowerCase();
+                    const isVideo = contentType.includes("video") || contentType.includes("octet-stream");
+                    if (r.ok && (isVideo || !contentType)) {
+                        res.original = base + u;
+                        break;
+                    }
+                } catch (e) {}
+            }
         }
 
         return res;

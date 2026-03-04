@@ -364,8 +364,14 @@
 <script>
     // ====== CONFIG ======
     const CONFIG = {
-        API_BASE: '',
+        API_BASE: (window.location.protocol === 'file:' || window.location.href.includes('scf.usercontent.goog'))
+                  ? 'http://localhost:8000/api'
+                  : '/api',
         STATIC_MANIFEST: './data/manifest.json',
+        STATIC_MANIFEST_CANDIDATES: [
+            './data/manifest.json',
+            '/data/manifest.json',
+        ],
         ACTION_NAMES: {
             0: "Listen", 1: "Distract", 2: "Phone", 3: "Doze", 4: "Chat",
             5: "Note", 6: "Raise", 7: "Stand", 8: "Read"
@@ -383,22 +389,51 @@
         }
     };
 
+    async function fetchJsonStrict(url) {
+        const r = await fetch(url, { cache: 'no-cache' });
+        if (!r.ok) {
+            throw new Error(`HTTP ${r.status} for ${url}`);
+        }
+        const ct = (r.headers.get('content-type') || '').toLowerCase();
+        if (ct && !ct.includes('application/json') && !ct.includes('text/json')) {
+            const preview = (await r.text()).slice(0, 80).replace(/\s+/g, ' ');
+            throw new Error(`Non-JSON response for ${url}: ${preview}`);
+        }
+        return r.json();
+    }
+
+    function getManifestCandidates() {
+        const path = window.location.pathname || '/';
+        const baseDir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1);
+        const dynamic = [
+            `${baseDir}data/manifest.json`,
+            `${baseDir}../data/manifest.json`
+        ];
+        const merged = [CONFIG.STATIC_MANIFEST, ...dynamic, ...CONFIG.STATIC_MANIFEST_CANDIDATES];
+        return [...new Set(merged)];
+    }
+
     const DataSource = {
-        mode: 'static',
+        mode: 'api',
         manifest: null,
 
         async init() {
-            const r = await fetch(CONFIG.STATIC_MANIFEST, { cache: 'no-cache' });
-            if (!r.ok) {
-                throw new Error(`Static manifest not found: ${CONFIG.STATIC_MANIFEST}`);
+            for (const manifestUrl of getManifestCandidates()) {
+                try {
+                    const m = await fetchJsonStrict(manifestUrl);
+                    if (m && Array.isArray(m.cases)) {
+                        this.mode = 'static';
+                        this.manifest = m;
+                        console.log('[DataSource] static mode via', manifestUrl);
+                        return;
+                    }
+                } catch (e) {
+                    // Continue trying other candidate paths.
+                }
             }
-            const m = await r.json();
-            if (!m || !Array.isArray(m.cases)) {
-                throw new Error('Invalid static manifest format: expected { cases: [] }');
-            }
-            this.manifest = m;
-            this.mode = 'static';
-            console.log('[DataSource] static mode');
+
+            this.mode = 'api';
+            console.log('[DataSource] api mode');
         },
 
         _caseById(caseId) {
@@ -407,68 +442,88 @@
         },
 
         async listCases() {
-            if (!this.manifest) await this.init();
-            return this.manifest.cases;
+            if (this.mode === 'static' && this.manifest) {
+                return this.manifest.cases;
+            }
+            return fetchJsonStrict(`${CONFIG.API_BASE}/list_cases`);
         },
 
         async media(caseId) {
-            const c = this._caseById(caseId);
-            if (!c || !c.paths) return null;
-            return {
-                video_id: c.video_id,
-                view: c.view || '',
-                overlay: c.paths.video_overlay || c.paths.video_original || null,
-                pose_demo: c.paths.video_pose || null,
-                objects_demo: c.paths.video_objects || null,
-            };
+            if (this.mode === 'static') {
+                const c = this._caseById(caseId);
+                if (!c || !c.paths) return null;
+                return {
+                    video_id: c.video_id,
+                    view: c.view || '',
+                    overlay: c.paths.video_overlay || c.paths.video_original || null,
+                    pose_demo: c.paths.video_pose || null,
+                    objects_demo: c.paths.video_objects || null,
+                };
+            }
+            return fetch(`${CONFIG.API_BASE}/media/${encodeURIComponent(caseId)}`).then(r => r.ok ? r.json() : null);
         },
 
         async timeline(caseId) {
-            const c = this._caseById(caseId);
-            if (!c?.paths?.timeline) return { items: [] };
-            return fetch(c.paths.timeline).then(r => r.ok ? r.json() : { items: [] });
+            if (this.mode === 'static') {
+                const c = this._caseById(caseId);
+                if (!c?.paths?.timeline) return { items: [] };
+                return fetch(c.paths.timeline).then(r => r.ok ? r.json() : { items: [] });
+            }
+            return fetchJsonStrict(`${CONFIG.API_BASE}/timeline/${caseId}`);
         },
 
         async transcript(caseId) {
-            const c = this._caseById(caseId);
-            if (!c?.paths?.transcript) return [];
-            try {
-                const text = await fetch(c.paths.transcript).then(r => r.ok ? r.text() : '');
-                return text.split('
-').map(x => x.trim()).filter(Boolean).map(x => JSON.parse(x));
-            } catch (e) {
-                return [];
+            if (this.mode === 'static') {
+                const c = this._caseById(caseId);
+                if (!c?.paths?.transcript) return [];
+                try {
+                    const text = await fetch(c.paths.transcript).then(r => r.ok ? r.text() : '');
+                    return text.split('\n').map(x => x.trim()).filter(Boolean).map(x => JSON.parse(x));
+                } catch (e) {
+                    return [];
+                }
             }
+            return fetchJsonStrict(`${CONFIG.API_BASE}/transcript/${caseId}`);
         },
 
         async tracks(caseId) {
-            const c = this._caseById(caseId);
-            if (!c?.paths?.tracks) return {};
-            try {
-                const text = await fetch(c.paths.tracks).then(r => r.ok ? r.text() : '');
-                const out = {};
-                text.split('
-').map(x => x.trim()).filter(Boolean).forEach(line => {
-                    const d = JSON.parse(line);
-                    const frame = d.frame;
-                    out[String(frame)] = (d.persons || []).map(pp => ({ id: pp.track_id, box: pp.bbox }));
-                });
-                return out;
-            } catch (e) {
-                return {};
+            if (this.mode === 'static') {
+                const c = this._caseById(caseId);
+                if (!c?.paths?.tracks) return {};
+                try {
+                    const text = await fetch(c.paths.tracks).then(r => r.ok ? r.text() : '');
+                    const out = {};
+                    text.split('\n').map(x => x.trim()).filter(Boolean).forEach(line => {
+                        const d = JSON.parse(line);
+                        const frame = d.frame;
+                        out[String(frame)] = (d.persons || []).map(pp => ({ id: pp.track_id, box: pp.bbox }));
+                    });
+                    return out;
+                } catch (e) {
+                    return {};
+                }
             }
+            return fetchJsonStrict(`${CONFIG.API_BASE}/tracks/${caseId}`);
         },
 
         async stats(caseId) {
-            const c = this._caseById(caseId);
-            if (!c?.paths?.stats) return { class_pie_chart: [] };
-            return fetch(c.paths.stats).then(r => r.ok ? r.json() : { class_pie_chart: [] });
+            if (this.mode === 'static') {
+                const c = this._caseById(caseId);
+                if (!c?.paths?.stats) return {};
+                return fetch(c.paths.stats).then(r => r.ok ? r.json() : {});
+            }
+            return fetchJsonStrict(`${CONFIG.API_BASE}/stats/${caseId}`);
         },
 
         async projection(caseId, method, metric) {
-            const c = this._caseById(caseId);
-            if (!c?.paths?.projection) return { method, metric, points: [] };
-            return fetch(c.paths.projection).then(r => r.ok ? r.json() : { method, metric, points: [] });
+            if (this.mode === 'static') {
+                const c = this._caseById(caseId);
+                if (!c?.paths?.projection) return { method, metric, points: [] };
+                const arr = await fetch(c.paths.projection).then(r => r.ok ? r.json() : []);
+                const points = Array.isArray(arr) ? arr.map(x => ({ track_id: x.track_id, x: x.x, y: x.y })) : [];
+                return { method, metric, points };
+            }
+            return fetchJsonStrict(`${CONFIG.API_BASE}/projection/${caseId}?method=${method}&metric=${metric}`);
         }
     };
 
@@ -611,7 +666,7 @@
         if (caseMeta && caseMeta.view && caseMeta.case_id) {
             originalCandidates.push(`/data/智慧课堂学生行为数据集/${caseMeta.view}/${caseMeta.case_id}.mp4`);
         }
-        originalCandidates.push(`/videos/${caseId}.mp4`);
+        originalCandidates.push(`/assets/videos/${caseId}.mp4`);
 
         for (const u of originalCandidates) {
             try {

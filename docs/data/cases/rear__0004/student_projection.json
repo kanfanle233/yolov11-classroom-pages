@@ -1,0 +1,98 @@
+[
+  {
+    "track_id": 1,
+    "x": 2.3870584964752197,
+    "y": 8.899452209472656,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 2,
+    "x": 1.426374077796936,
+    "y": 8.746707916259766,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 3,
+    "x": 0.42599114775657654,
+    "y": 7.488402366638184,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 5,
+    "x": 1.9973859786987305,
+    "y": 9.420703887939453,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 4,
+    "x": 1.2476311922073364,
+    "y": 9.472586631774902,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 6,
+    "x": 1.11699378490448,
+    "y": 7.1865715980529785,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 9,
+    "x": 0.7608332633972168,
+    "y": 8.412222862243652,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 7,
+    "x": 0.06611551344394684,
+    "y": 8.753573417663574,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 13,
+    "x": 1.2934123277664185,
+    "y": 7.8160014152526855,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 8,
+    "x": 2.552743673324585,
+    "y": 8.20879077911377,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 11,
+    "x": -0.18754267692565918,
+    "y": 8.092952728271484,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 10,
+    "x": 2.0587403774261475,
+    "y": 7.533680438995361,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  }
+]

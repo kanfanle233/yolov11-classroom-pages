@@ -1,0 +1,176 @@
+{
+  "items": [
+    {
+      "type": "person",
+      "track_id": 1,
+      "row": 0,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 1,
+      "row": 0,
+      "start": 3.0,
+      "end": 4.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 2,
+      "row": 1,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 3,
+      "row": 2,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 4,
+      "row": 3,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 5,
+      "row": 4,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 6,
+      "row": 5,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 3,
+      "action_label": "Doze",
+      "color": "#3498db"
+    },
+    {
+      "type": "person",
+      "track_id": 7,
+      "row": 6,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 8,
+      "row": 7,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 9,
+      "row": 8,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 10,
+      "row": 9,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 6,
+      "action_label": "Raise",
+      "color": "#f1c40f"
+    },
+    {
+      "type": "person",
+      "track_id": 10,
+      "row": 9,
+      "start": 3.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 11,
+      "row": 10,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 7,
+      "action_label": "Stand",
+      "color": "#1abc9c"
+    },
+    {
+      "type": "person",
+      "track_id": 13,
+      "row": 11,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 3,
+      "action_label": "Doze",
+      "color": "#3498db"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 0.0,
+      "end": 2.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 1.0,
+      "end": 3.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 2.0,
+      "end": 4.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 3.0,
+      "end": 5.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    }
+  ]
+}

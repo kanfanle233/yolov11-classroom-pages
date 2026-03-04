@@ -1,0 +1,84 @@
+{
+  "cases": [
+    {
+      "video_id": "rear__0001",
+      "view": "后方视角",
+      "case_id": "0001",
+      "paths": {
+        "timeline": "./data/cases/rear__0001/timeline_viz.json",
+        "projection": "./data/cases/rear__0001/student_projection.json",
+        "transcript": "./data/cases/rear__0001/transcript.jsonl",
+        "tracks": "./data/cases/rear__0001/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/rear__0001.mp4",
+        "video_overlay": "./assets/videos/rear__0001.mp4",
+        "video_pose": "./assets/videos/rear__0001.mp4",
+        "video_objects": "./assets/videos/rear__0001.mp4"
+      }
+    },
+    {
+      "video_id": "rear__0002",
+      "view": "后方视角",
+      "case_id": "0002",
+      "paths": {
+        "timeline": "./data/cases/rear__0002/timeline_viz.json",
+        "projection": "./data/cases/rear__0002/student_projection.json",
+        "transcript": "./data/cases/rear__0002/transcript.jsonl",
+        "tracks": "./data/cases/rear__0002/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/rear__0002.mp4",
+        "video_overlay": "./assets/videos/rear__0002.mp4",
+        "video_pose": "./assets/videos/rear__0002.mp4",
+        "video_objects": "./assets/videos/rear__0002.mp4"
+      }
+    },
+    {
+      "video_id": "rear__0003",
+      "view": "后方视角",
+      "case_id": "0003",
+      "paths": {
+        "timeline": "./data/cases/rear__0003/timeline_viz.json",
+        "projection": "./data/cases/rear__0003/student_projection.json",
+        "transcript": "./data/cases/rear__0003/transcript.jsonl",
+        "tracks": "./data/cases/rear__0003/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/rear__0003.mp4",
+        "video_overlay": "./assets/videos/rear__0003.mp4",
+        "video_pose": "./assets/videos/rear__0003.mp4",
+        "video_objects": "./assets/videos/rear__0003.mp4"
+      }
+    },
+    {
+      "video_id": "rear__0004",
+      "view": "后方视角",
+      "case_id": "0004",
+      "paths": {
+        "timeline": "./data/cases/rear__0004/timeline_viz.json",
+        "projection": "./data/cases/rear__0004/student_projection.json",
+        "transcript": "./data/cases/rear__0004/transcript.jsonl",
+        "tracks": "./data/cases/rear__0004/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/rear__0004.mp4",
+        "video_overlay": "./assets/videos/rear__0004.mp4",
+        "video_pose": "./assets/videos/rear__0004.mp4",
+        "video_objects": "./assets/videos/rear__0004.mp4"
+      }
+    },
+    {
+      "video_id": "rear__0005",
+      "view": "后方视角",
+      "case_id": "0005",
+      "paths": {
+        "timeline": "./data/cases/rear__0005/timeline_viz.json",
+        "projection": "./data/cases/rear__0005/student_projection.json",
+        "transcript": "./data/cases/rear__0005/transcript.jsonl",
+        "tracks": "./data/cases/rear__0005/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/rear__0005.mp4",
+        "video_overlay": "./assets/videos/rear__0005.mp4",
+        "video_pose": "./assets/videos/rear__0005.mp4",
+        "video_objects": "./assets/videos/rear__0005.mp4"
+      }
+    }
+  ]
+}

@@ -1,0 +1,130 @@
+[
+  {
+    "track_id": 1,
+    "x": 0.35224756598472595,
+    "y": 13.236505508422852,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 16.7
+  },
+  {
+    "track_id": 12,
+    "x": 0.475306898355484,
+    "y": 14.426103591918945,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 25.0
+  },
+  {
+    "track_id": 6,
+    "x": 0.14353567361831665,
+    "y": 12.640849113464355,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 6.2
+  },
+  {
+    "track_id": 2,
+    "x": 0.7667932510375977,
+    "y": 14.979585647583008,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 6.2
+  },
+  {
+    "track_id": 4,
+    "x": 0.07084203511476517,
+    "y": 13.956768989562988,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 6.2
+  },
+  {
+    "track_id": 16,
+    "x": 0.8842653036117554,
+    "y": 12.305689811706543,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 8.3
+  },
+  {
+    "track_id": 3,
+    "x": 1.9666204452514648,
+    "y": 14.466889381408691,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 6.2
+  },
+  {
+    "track_id": 13,
+    "x": 1.5953104496002197,
+    "y": 13.84213638305664,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 7.1
+  },
+  {
+    "track_id": 11,
+    "x": 1.437652349472046,
+    "y": 12.182042121887207,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 8.3
+  },
+  {
+    "track_id": 7,
+    "x": 1.773236870765686,
+    "y": 12.896730422973633,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 6.2
+  },
+  {
+    "track_id": 8,
+    "x": 2.172799587249756,
+    "y": 13.827948570251465,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 7.1
+  },
+  {
+    "track_id": 5,
+    "x": 0.8877866864204407,
+    "y": 13.169910430908203,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 16.7
+  },
+  {
+    "track_id": 10,
+    "x": -0.10872068256139755,
+    "y": 14.60753059387207,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 16.7
+  },
+  {
+    "track_id": 9,
+    "x": 1.1972196102142334,
+    "y": 14.267121315002441,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 8.3
+  },
+  {
+    "track_id": 15,
+    "x": -0.44505247473716736,
+    "y": 13.213454246520996,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 16.7
+  },
+  {
+    "track_id": 19,
+    "x": 0.5424758195877075,
+    "y": 11.725003242492676,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  }
+]

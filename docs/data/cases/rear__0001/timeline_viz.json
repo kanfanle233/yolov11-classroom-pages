@@ -1,0 +1,630 @@
+{
+  "items": [
+    {
+      "type": "person",
+      "track_id": 2,
+      "row": 0,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 2,
+      "row": 0,
+      "start": 3.0,
+      "end": 9.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 2,
+      "row": 0,
+      "start": 9.0,
+      "end": 10.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 3,
+      "row": 1,
+      "start": 2.0,
+      "end": 4.0,
+      "action_id": 1,
+      "action_label": "Distract",
+      "color": "#34495e"
+    },
+    {
+      "type": "person",
+      "track_id": 3,
+      "row": 1,
+      "start": 4.0,
+      "end": 5.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 3,
+      "row": 1,
+      "start": 5.0,
+      "end": 7.0,
+      "action_id": 1,
+      "action_label": "Distract",
+      "color": "#34495e"
+    },
+    {
+      "type": "person",
+      "track_id": 3,
+      "row": 1,
+      "start": 7.0,
+      "end": 8.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 3,
+      "row": 1,
+      "start": 8.0,
+      "end": 10.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 4,
+      "row": 2,
+      "start": 2.0,
+      "end": 5.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 4,
+      "row": 2,
+      "start": 5.0,
+      "end": 6.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 4,
+      "row": 2,
+      "start": 6.0,
+      "end": 7.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 4,
+      "row": 2,
+      "start": 7.0,
+      "end": 8.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 4,
+      "row": 2,
+      "start": 8.0,
+      "end": 10.0,
+      "action_id": 1,
+      "action_label": "Distract",
+      "color": "#34495e"
+    },
+    {
+      "type": "person",
+      "track_id": 6,
+      "row": 3,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 6,
+      "row": 3,
+      "start": 3.0,
+      "end": 4.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 6,
+      "row": 3,
+      "start": 4.0,
+      "end": 10.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 7,
+      "row": 4,
+      "start": 2.0,
+      "end": 5.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 7,
+      "row": 4,
+      "start": 5.0,
+      "end": 6.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 7,
+      "row": 4,
+      "start": 6.0,
+      "end": 10.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 8,
+      "row": 5,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 8,
+      "row": 5,
+      "start": 4.0,
+      "end": 5.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 8,
+      "row": 5,
+      "start": 5.0,
+      "end": 7.0,
+      "action_id": 1,
+      "action_label": "Distract",
+      "color": "#34495e"
+    },
+    {
+      "type": "person",
+      "track_id": 8,
+      "row": 5,
+      "start": 7.0,
+      "end": 10.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 11,
+      "row": 6,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 11,
+      "row": 6,
+      "start": 4.0,
+      "end": 7.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 11,
+      "row": 6,
+      "start": 7.0,
+      "end": 10.0,
+      "action_id": 1,
+      "action_label": "Distract",
+      "color": "#34495e"
+    },
+    {
+      "type": "person",
+      "track_id": 13,
+      "row": 7,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 13,
+      "row": 7,
+      "start": 4.0,
+      "end": 6.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 13,
+      "row": 7,
+      "start": 6.0,
+      "end": 7.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 13,
+      "row": 7,
+      "start": 7.0,
+      "end": 8.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 13,
+      "row": 7,
+      "start": 8.0,
+      "end": 10.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 9,
+      "row": 8,
+      "start": 3.0,
+      "end": 5.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 9,
+      "row": 8,
+      "start": 6.0,
+      "end": 7.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 9,
+      "row": 8,
+      "start": 7.0,
+      "end": 8.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 9,
+      "row": 8,
+      "start": 8.0,
+      "end": 10.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 16,
+      "row": 9,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 16,
+      "row": 9,
+      "start": 5.0,
+      "end": 6.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 16,
+      "row": 9,
+      "start": 6.0,
+      "end": 7.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 16,
+      "row": 9,
+      "start": 7.0,
+      "end": 10.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 1,
+      "row": 10,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 1,
+      "row": 10,
+      "start": 3.0,
+      "end": 4.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 1,
+      "row": 10,
+      "start": 4.0,
+      "end": 5.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 5,
+      "row": 11,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 5,
+      "row": 11,
+      "start": 3.0,
+      "end": 4.0,
+      "action_id": 5,
+      "action_label": "Note",
+      "color": "#9b59b6"
+    },
+    {
+      "type": "person",
+      "track_id": 5,
+      "row": 11,
+      "start": 4.0,
+      "end": 5.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 10,
+      "row": 12,
+      "start": 3.0,
+      "end": 5.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 10,
+      "row": 12,
+      "start": 5.0,
+      "end": 6.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 15,
+      "row": 13,
+      "start": 6.0,
+      "end": 7.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 15,
+      "row": 13,
+      "start": 7.0,
+      "end": 8.0,
+      "action_id": 4,
+      "action_label": "Chat",
+      "color": "#e67e22"
+    },
+    {
+      "type": "person",
+      "track_id": 15,
+      "row": 13,
+      "start": 8.0,
+      "end": 9.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 12,
+      "row": 14,
+      "start": 2.0,
+      "end": 3.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "person",
+      "track_id": 12,
+      "row": 14,
+      "start": 3.0,
+      "end": 4.0,
+      "action_id": 0,
+      "action_label": "Listen",
+      "color": "#2ecc71"
+    },
+    {
+      "type": "person",
+      "track_id": 19,
+      "row": 15,
+      "start": 9.0,
+      "end": 10.0,
+      "action_id": 2,
+      "action_label": "Phone",
+      "color": "#e74c3c"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 0.0,
+      "end": 2.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 1.0,
+      "end": 3.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 2.0,
+      "end": 4.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 3.0,
+      "end": 5.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 4.0,
+      "end": 6.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 5.0,
+      "end": 7.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 6.0,
+      "end": 8.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 7.0,
+      "end": 9.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 8.0,
+      "end": 10.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 9.0,
+      "end": 11.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 10.0,
+      "end": 12.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    },
+    {
+      "type": "group",
+      "track_id": -1,
+      "start": 11.0,
+      "end": 13.0,
+      "label": "individual_work",
+      "color": "#E2DBBE"
+    }
+  ]
+}

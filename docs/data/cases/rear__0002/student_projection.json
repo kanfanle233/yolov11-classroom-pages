@@ -1,0 +1,90 @@
+[
+  {
+    "track_id": 1,
+    "x": 11.958097457885742,
+    "y": 6.6383185386657715,
+    "cluster": 2,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 3,
+    "x": 12.196029663085938,
+    "y": 6.001744747161865,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 2,
+    "x": 13.027336120605469,
+    "y": 5.5650177001953125,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 5,
+    "x": 12.954923629760742,
+    "y": 4.665889739990234,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 6,
+    "x": 13.208414077758789,
+    "y": 4.0371785163879395,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 7,
+    "x": 12.001924514770508,
+    "y": 4.946280479431152,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 10,
+    "x": 13.62188720703125,
+    "y": 5.798237323760986,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 8,
+    "x": 12.218600273132324,
+    "y": 4.12185525894165,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 9,
+    "x": 13.08816146850586,
+    "y": 6.509276866912842,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 11,
+    "x": 13.789838790893555,
+    "y": 4.735245704650879,
+    "cluster": 0,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  },
+  {
+    "track_id": 4,
+    "x": 11.594483375549316,
+    "y": 5.692361831665039,
+    "cluster": 1,
+    "avg_attention": 1.0,
+    "activity": 50.0
+  }
+]

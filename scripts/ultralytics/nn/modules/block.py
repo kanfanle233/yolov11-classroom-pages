@@ -37,6 +37,7 @@ __all__ = (
     "C2fPSA",
     "CPCA",
     "ASPN",
+    "DySnakeConv",
     "C3Ghost",
     "C3k2",
     "C3x",
@@ -303,6 +304,31 @@ class ASPN(nn.Module):
         fused = torch.cat([p + i for p, i in zip(parts, interaction)], 1)
         out = self.cv2(fused)
         return x + out if self.add else out
+
+
+class DySnakeConv(nn.Module):
+    """Dynamic anisotropic convolution that approximates snake-like receptive adaptation."""
+
+    def __init__(self, c1: int, c2: int, k: int = 3, s: int = 1):
+        """Initialize DySnakeConv with horizontal/vertical depthwise paths and a learned gate."""
+        super().__init__()
+        p = k // 2
+        self.stem = nn.Conv2d(c1, c1, 3, s, 1, groups=c1, bias=False)
+        self.h_path = nn.Conv2d(c1, c1, (1, k), 1, (0, p), groups=c1, bias=False)
+        self.v_path = nn.Conv2d(c1, c1, (k, 1), 1, (p, 0), groups=c1, bias=False)
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c1, c1, 1, 1, 0, bias=True),
+            nn.Sigmoid(),
+        )
+        self.out = Conv(c1, c2, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Blend horizontal/vertical paths using dynamic channel gates."""
+        y = self.stem(x)
+        g = self.gate(y)
+        y = g * self.h_path(y) + (1.0 - g) * self.v_path(y)
+        return self.out(y)
 
 
 class C1(nn.Module):

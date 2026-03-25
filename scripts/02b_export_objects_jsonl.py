@@ -1,9 +1,20 @@
-import os
+﻿import os
 import json
 import cv2
 import argparse
 from pathlib import Path
 from ultralytics import YOLO
+
+CLASSROOM_ALIASES = {
+    "cell phone": "phone",
+    "mobile phone": "phone",
+    "book": "book",
+    "textbook": "book",
+    "pen": "pen",
+    "pencil": "pen",
+    "notebook": "notebook",
+    "laptop": "laptop",
+}
 
 
 def safe_mkdir(p: Path):
@@ -26,6 +37,11 @@ def parse_classes(s: str):
     return out
 
 
+def normalize_name(name: str) -> str:
+    raw = (name or "").strip().lower()
+    return CLASSROOM_ALIASES.get(raw, raw)
+
+
 def main():
     base_dir = Path(__file__).resolve().parents[1]
 
@@ -34,21 +50,23 @@ def main():
     parser.add_argument("--out", type=str, required=True)
     parser.add_argument("--model", type=str, default="yolo11s.pt")
 
-    # ✅ 关键：让你能复现/调参
-    parser.add_argument("--conf", type=float, default=0.10, help="confidence threshold (small objects建议 0.08~0.15)")
+    # 鉁?鍏抽敭锛氳浣犺兘澶嶇幇/璋冨弬
+    parser.add_argument("--conf", type=float, default=0.10, help="confidence threshold (small objects寤鸿 0.08~0.15)")
     parser.add_argument("--iou", type=float, default=0.50, help="NMS IoU threshold")
-    parser.add_argument("--imgsz", type=int, default=1280, help="inference image size (small objects建议 960/1280)")
+    parser.add_argument("--imgsz", type=int, default=1280, help="inference image size (small objects寤鸿 960/1280)")
     parser.add_argument("--device", type=str, default="", help="e.g. 0 or 'cpu'. empty=auto")
 
-    # ✅ 关键：只检测指定类（强烈建议默认不含 person）
-    # COCO 常见：67 cell phone, 73 book, 63 laptop, 62 tv, 64 mouse, etc（以你模型 names 为准）
+    # 鉁?鍏抽敭锛氬彧妫€娴嬫寚瀹氱被锛堝己鐑堝缓璁粯璁や笉鍚?person锛?
+    # COCO 甯歌锛?7 cell phone, 73 book, 63 laptop, 62 tv, 64 mouse, etc锛堜互浣犳ā鍨?names 涓哄噯锛?
     parser.add_argument("--classes", type=str, default="67,73,63",
                         help="comma-separated class ids to keep, e.g. '67,73,63'. default excludes person.")
+    parser.add_argument("--class_name_map", type=str, default="",
+                        help="optional JSON path mapping class_id->class_name (for custom classroom detector)")
 
-    # ✅ 输出一个 demo 视频（像01一样），方便肉眼验证
+    # 鉁?杈撳嚭涓€涓?demo 瑙嗛锛堝儚01涓€鏍凤級锛屾柟渚胯倝鐪奸獙璇?
     parser.add_argument("--out_video", type=str, default="", help="optional: output demo video with boxes")
 
-    # ✅ 可选：每隔多少帧推理一次（加速用，默认每帧）
+    # 鉁?鍙€夛細姣忛殧澶氬皯甯ф帹鐞嗕竴娆★紙鍔犻€熺敤锛岄粯璁ゆ瘡甯э級
     parser.add_argument("--stride", type=int, default=1, help="infer every N frames (1=every frame)")
 
     args = parser.parse_args()
@@ -60,30 +78,45 @@ def main():
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    # ✅ 模型路径：允许你传相对路径（项目根目录下）
+    # 鉁?妯″瀷璺緞锛氬厑璁镐綘浼犵浉瀵硅矾寰勶紙椤圭洰鏍圭洰褰曚笅锛?
     model_path = Path(args.model)
-    if not model_path.is_absolute():
-        model_path = (base_dir / model_path).resolve()
-    if not model_path.exists():
-        # ultralytics 也可能会自动下载，但你现在做科研工程，建议显式失败，别悄悄换权重
-        raise FileNotFoundError(f"Model not found: {model_path}")
+    if model_path.is_absolute():
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model not found: {model_path}")
+        model_ref = str(model_path)
+    else:
+        local_model = (base_dir / model_path).resolve()
+        model_ref = str(local_model) if local_model.exists() else args.model
 
-    model = YOLO(str(model_path))
+    model = YOLO(model_ref)
 
-    # ✅ names 映射，后面用来保证 name 一定正确
+    # 鉁?names 鏄犲皠锛屽悗闈㈢敤鏉ヤ繚璇?name 涓€瀹氭纭?
     names = model.model.names if hasattr(model, "model") else model.names
     if not isinstance(names, dict):
-        # 有的版本是 list
+        # 鏈夌殑鐗堟湰鏄?list
         names = {i: n for i, n in enumerate(list(names))}
+    if args.class_name_map:
+        map_path = Path(args.class_name_map)
+        if not map_path.is_absolute():
+            map_path = (base_dir / map_path).resolve()
+        if map_path.exists():
+            with open(map_path, "r", encoding="utf-8") as f:
+                ext_map = json.load(f)
+            if isinstance(ext_map, dict):
+                for k, v in ext_map.items():
+                    try:
+                        names[int(k)] = str(v)
+                    except Exception:
+                        continue
 
     keep_classes = parse_classes(args.classes)  # None or [..]
     if keep_classes is not None:
-        # 防御：过滤掉越界 id
+        # 闃插尽锛氳繃婊ゆ帀瓒婄晫 id
         keep_classes = [cid for cid in keep_classes if cid in names]
 
     print(f"[INFO] video   = {video_path}")
     print(f"[INFO] out     = {jsonl_path}")
-    print(f"[INFO] model   = {model_path}")
+    print(f"[INFO] model   = {model_ref}")
     print(f"[INFO] conf/iou = {args.conf}/{args.iou}, imgsz={args.imgsz}, stride={args.stride}")
     print(f"[INFO] classes = {keep_classes} -> {[names[c] for c in keep_classes] if keep_classes else 'ALL'}")
 
@@ -96,7 +129,7 @@ def main():
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # 视频 writer（可选）
+    # 瑙嗛 writer锛堝彲閫夛級
     writer = None
     out_video_path = None
     if args.out_video.strip():
@@ -120,7 +153,7 @@ def main():
 
             detections = []
             if do_infer:
-                # ✅ ultralytics 原生 classes 过滤：最关键的“防 person 污染”
+                # 鉁?ultralytics 鍘熺敓 classes 杩囨护锛氭渶鍏抽敭鐨勨€滈槻 person 姹℃煋鈥?
                 results = model.predict(
                     frame,
                     verbose=False,
@@ -128,7 +161,7 @@ def main():
                     iou=args.iou,
                     imgsz=args.imgsz,
                     device=args.device if args.device else None,
-                    classes=keep_classes  # ✅ 关键：只要指定类
+                    classes=keep_classes  # 鉁?鍏抽敭锛氬彧瑕佹寚瀹氱被
                 )
                 r = results[0]
 
@@ -137,9 +170,9 @@ def main():
                         cls_id = int(b.cls[0])
                         x1, y1, x2, y2 = [float(v) for v in b.xyxy[0].tolist()]
                         conf = float(b.conf[0])
-                        name = names.get(cls_id, "unknown")
+                        name = normalize_name(str(names.get(cls_id, "unknown")))
 
-                        # ✅ schema 稳定：每条必有 name/conf/bbox
+                        # 鉁?schema 绋冲畾锛氭瘡鏉″繀鏈?name/conf/bbox
                         detections.append({
                             "cls_id": cls_id,
                             "name": name,
@@ -147,14 +180,14 @@ def main():
                             "bbox": [x1, y1, x2, y2]
                         })
 
-                        # 可视化
+                        # 鍙鍖?
                         if writer is not None:
                             cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
                             cv2.putText(frame, f"{name} {conf:.2f}", (int(x1), max(0, int(y1) - 5)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-            # ✅ 建议：即使本帧没检测到，也可以不写（省空间）
-            # 但为了后续对齐更稳：你可以改成“每帧都写”，这里按你之前逻辑：有 det 才写
+            # 鉁?寤鸿锛氬嵆浣挎湰甯ф病妫€娴嬪埌锛屼篃鍙互涓嶅啓锛堢渷绌洪棿锛?
+            # 浣嗕负浜嗗悗缁榻愭洿绋筹細浣犲彲浠ユ敼鎴愨€滄瘡甯ч兘鍐欌€濓紝杩欓噷鎸変綘涔嬪墠閫昏緫锛氭湁 det 鎵嶅啓
             if len(detections) > 0:
                 rec = {
                     "frame": frame_idx,
@@ -184,3 +217,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

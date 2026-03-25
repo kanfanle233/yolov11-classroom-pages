@@ -1,4 +1,4 @@
-# scripts/09_run_pipeline.py
+﻿# scripts/09_run_pipeline.py
 import argparse
 import json
 import shutil
@@ -58,7 +58,7 @@ def maybe_run(step_id, step_name, outputs, inputs, force, from_step, run_fn, min
             break
 
     if all_fresh:
-        print(f"[CACHE] step{step_id:02d} {step_name} -> Outputs fresh.")
+        print(f"[CACHE] step{step_id:02d} {step_name} -> outputs fresh")
     else:
         print(f"[DO] step{step_id:02d} {step_name}")
         run_fn()
@@ -66,11 +66,20 @@ def maybe_run(step_id, step_name, outputs, inputs, force, from_step, run_fn, min
 
 def resolve_model_or_fail(model_arg: str) -> str:
     p = Path(model_arg)
-    if not p.is_absolute():
-        p = (PROJECT_ROOT / p).resolve()
-    if not p.exists():
-        raise FileNotFoundError(f"Model not found: {p}")
-    return str(p)
+    if p.is_absolute() or len(p.parts) > 1:
+        q = p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
+        if not q.exists():
+            raise FileNotFoundError(f"Model not found: {q}")
+        return str(q)
+
+    local = (PROJECT_ROOT / model_arg).resolve()
+    if local.exists():
+        return str(local)
+    cwd_local = (Path.cwd() / model_arg).resolve()
+    if cwd_local.exists():
+        return str(cwd_local)
+    # Allow Ultralytics model aliases, e.g. yolo11n-pose.pt.
+    return model_arg
 
 
 def resolve_video_path(video_arg: str) -> Path:
@@ -106,10 +115,7 @@ def _resolve_out_dir(args, video_path: Path, base_dir: Path) -> Path:
         return resolve_video_path(args.out_dir)
     if args.output_root:
         root = resolve_video_path(args.output_root)
-        if args.view:
-            view_dir = root / args.view
-        else:
-            view_dir = root
+        view_dir = root / args.view if args.view else root
         case_id = args.case_id or video_path.stem
         if args.video_id:
             vid = args.video_id
@@ -190,6 +196,22 @@ def _export_compat_bundle(
         _write_json(legacy_summary, {"info": "See downstream summary outputs for details."})
 
 
+def _auto_pose_model_path(user_arg: str) -> str:
+    if user_arg and user_arg.lower() != "auto":
+        return resolve_model_or_fail(user_arg)
+
+    enhanced = (PROJECT_ROOT / "models" / "classroom_yolo_enhanced.pt").resolve()
+    if enhanced.exists():
+        print(f"[INFO] Found enhanced classroom model, using: {enhanced}")
+        return str(enhanced)
+
+    print(
+        "[INFO] Enhanced pose model not found. Falling back to yolo11n-pose.pt. "
+        "You can train one via scripts/training/train_classroom_yolo.py"
+    )
+    return resolve_model_or_fail("yolo11n-pose.pt")
+
+
 def main():
     base_dir = PROJECT_ROOT
     scripts_dir = Path(__file__).resolve().parent
@@ -198,32 +220,52 @@ def main():
     parser.add_argument("--video", type=str, default="data/videos/demo3.mp4")
     parser.add_argument("--name", type=str, default="")
     parser.add_argument("--out_dir", type=str, default="")
-    parser.add_argument("--output_root", type=str, default="", help="root folder for demo outputs (e.g. output/.../_demo_web)")
-    parser.add_argument("--view", type=str, default="", help="view name for subfolder")
-    parser.add_argument("--view_code", type=str, default="", help="view code for folder naming (e.g. rear/teacher)")
-    parser.add_argument("--case_id", type=str, default="", help="case id for output naming (e.g. 0001)")
-    parser.add_argument("--video_id", type=str, default="", help="explicit video_id folder name")
-    parser.add_argument("--export_compat", type=int, default=1, help="1=export 01_run_single_video-style bundle")
+    parser.add_argument("--output_root", type=str, default="")
+    parser.add_argument("--view", type=str, default="")
+    parser.add_argument("--view_code", type=str, default="")
+    parser.add_argument("--case_id", type=str, default="")
+    parser.add_argument("--video_id", type=str, default="")
+    parser.add_argument("--export_compat", type=int, default=1)
     parser.add_argument("--py", type=str, default=sys.executable)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--from_step", type=int, default=1)
     parser.add_argument("--skip_vis", action="store_true")
     parser.add_argument("--skip_video", action="store_true")
 
-    # Model Weights
-    parser.add_argument("--pose_model", type=str, default="yolo11s-pose.pt")
-    parser.add_argument("--det_model", type=str, default="yolo11s.pt")
-    parser.add_argument("--action_model", type=str, default="", help="Optional: SlowFast weights")
-    parser.add_argument("--fuse_action_obj", type=int, default=1, help="1=run action/object fusion after step05")
-    parser.add_argument("--fuse_window", type=float, default=0.8, help="fusion time window in seconds")
-    parser.add_argument("--fuse_alpha", type=float, default=0.75, help="SlowFast weight in fusion")
-    parser.add_argument("--fuse_beta", type=float, default=0.25, help="Object evidence weight in fusion")
-    parser.add_argument("--stgcn_weight", type=str, default="", help="Optional: ST-GCN weights")
+    # Models
+    parser.add_argument("--pose_model", type=str, default="auto", help="auto | model path")
+    parser.add_argument("--det_model", type=str, default="yolo11n.pt")
+    parser.add_argument("--action_model", type=str, default="")
+    parser.add_argument("--stgcn_weight", type=str, default="")
 
-    # Parameters
+    # Behavior fusion
+    parser.add_argument("--fuse_action_obj", type=int, default=1)
+    parser.add_argument("--fuse_window", type=float, default=0.8)
+    parser.add_argument("--fuse_alpha", type=float, default=0.75)
+    parser.add_argument("--fuse_beta", type=float, default=0.25)
+
+    # Cross-upgrade switches
+    parser.add_argument("--enable_peer_aware", type=int, default=1)
+    parser.add_argument("--peer_radius", type=float, default=0.15)
+    parser.add_argument("--interaction_model", choices=["igformer", "legacy"], default="igformer")
+    parser.add_argument("--dsig_k", type=int, default=3)
+    parser.add_argument("--sdig_threshold", type=float, default=0.35)
+
+    parser.add_argument("--enable_mllm", type=int, default=0)
+    parser.add_argument("--mllm_model", type=str, default="heuristic")
+    parser.add_argument("--mllm_quantize", type=str, default="none")
+    parser.add_argument("--mllm_keyframe_interval", type=int, default=30)
+    parser.add_argument("--enable_cca", type=int, default=1)
+    parser.add_argument("--enable_dqd", type=int, default=1)
+
+    # Export options
+    parser.add_argument("--interpolate_occluded", type=int, default=0)
+    parser.add_argument("--occlusion_conf_thres", type=float, default=0.2)
+
+    # Misc
     parser.add_argument("--fps", type=float, default=25.0)
-    parser.add_argument("--viz_gap_tol", type=float, default=1.5, help="Visualization merge gap (s)")
-    parser.add_argument("--viz_min_dur", type=float, default=0.1, help="Visualization min duration (s)")
+    parser.add_argument("--viz_gap_tol", type=float, default=1.5)
+    parser.add_argument("--viz_min_dur", type=float, default=0.1)
 
     args = parser.parse_args()
 
@@ -235,164 +277,422 @@ def main():
     out_dir = _resolve_out_dir(args, video_path, base_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # === Output Paths ===
+    # Outputs
     pose_keypoints = out_dir / "pose_keypoints_v2.jsonl"
     objects_jsonl = out_dir / "objects.jsonl"
     pose_tracks = out_dir / "pose_tracks_smooth.jsonl"
-
-    # [新增路径] Pose Demo Video
     pose_demo_video = out_dir / "pose_demo_out.mp4"
+    objects_demo_video = out_dir / "objects_demo_out.mp4"
 
     actions_jsonl = out_dir / "actions.jsonl"
     actions_fused_jsonl = out_dir / "actions_fused.jsonl"
     embeddings_pkl = out_dir / "embeddings.pkl"
+    keyframe_dir = out_dir / "keyframes"
 
     transcript_jsonl = out_dir / "transcript.jsonl"
     per_person_json = out_dir / "per_person_sequences.json"
-    overlay_video = out_dir / f"{name}_overlay.mp4"
-    objects_demo_video = out_dir / "objects_demo_out.mp4"
-    timeline_png = out_dir / "timeline_chart.png"
+    mllm_verified_json = out_dir / "mllm_verified_sequences.json"
     group_events_jsonl = out_dir / "group_events.jsonl"
 
     student_features_json = out_dir / "student_features.json"
     student_projection_json = out_dir / "student_projection.json"
 
+    overlay_video = out_dir / f"{name}_overlay.mp4"
+    timeline_png = out_dir / "timeline_chart.png"
+
     py = args.py
-    pose_model_abs = resolve_model_or_fail(args.pose_model)
+    pose_model_abs = _auto_pose_model_path(args.pose_model)
     det_model_abs = resolve_model_or_fail(args.det_model)
-    fps_str = str(args.fps)
 
-    # --- Pipeline Execution ---
+    video_fps, _, video_w, video_h = _get_video_info(video_path, fps_fallback=args.fps)
+    fps_str = str(video_fps if video_fps > 0 else args.fps)
 
-    # Step 02: Pose Keypoints (Data Extraction)
-    maybe_run(2, "Pose Keypoints", [pose_keypoints], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "02_export_keypoints_jsonl.py",
-                               ["--video", str(video_path), "--out", str(pose_keypoints), "--model", pose_model_abs]))
+    # Step 02
+    maybe_run(
+        2,
+        "Pose Keypoints",
+        [pose_keypoints],
+        [video_path],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "02_export_keypoints_jsonl.py",
+            [
+                "--video",
+                str(video_path),
+                "--out",
+                str(pose_keypoints),
+                "--model",
+                pose_model_abs,
+                "--interpolate_occluded",
+                str(int(args.interpolate_occluded)),
+                "--occlusion_conf_thres",
+                str(float(args.occlusion_conf_thres)),
+            ],
+        ),
+    )
 
-    # [新增步骤] Step 21: Pose Video Demo (Visualization)
-    # 这一步调用 01_pose_video_demo.py 生成纯骨骼的演示视频
-    maybe_run(21, "Pose Demo Video", [pose_demo_video], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "01_pose_video_demo.py",
-                               ["--video", str(video_path),
-                                "--out", str(pose_demo_video),
-                                "--model", pose_model_abs]))
+    # Step 21
+    maybe_run(
+        21,
+        "Pose Demo Video",
+        [pose_demo_video],
+        [video_path, pose_keypoints],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "01_pose_video_demo.py",
+            ["--video", str(video_path), "--out", str(pose_demo_video), "--model", pose_model_abs],
+        ),
+    )
 
-    # Step 03: Objects Detection
-    maybe_run(3, "Objects Detection", [objects_jsonl], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "02b_export_objects_jsonl.py",
-                               ["--video", str(video_path), "--out", str(objects_jsonl), "--model", det_model_abs]))
+    # Step 03
+    maybe_run(
+        3,
+        "Objects Detection",
+        [objects_jsonl],
+        [video_path],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "02b_export_objects_jsonl.py",
+            ["--video", str(video_path), "--out", str(objects_jsonl), "--model", det_model_abs],
+        ),
+    )
 
-    # Step 04: Tracking
-    maybe_run(4, "Tracking", [pose_tracks], [pose_keypoints], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "03_track_and_smooth.py",
-                               ["--in", str(pose_keypoints), "--video", str(video_path), "--out", str(pose_tracks)]))
+    # Step 09 (object demo, optional side output)
+    maybe_run(
+        9,
+        "Objects Demo Video",
+        [objects_demo_video],
+        [video_path, objects_jsonl],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "03b_objects_video_demo.py",
+            [
+                "--video",
+                str(video_path),
+                "--objects",
+                str(objects_jsonl),
+                "--out",
+                str(objects_demo_video),
+                "--mux_audio",
+                "1",
+                "--conf",
+                "0.2",
+                "--show_empty",
+                "1",
+            ],
+        ),
+    )
 
-    # Step 05: Action Recognition (SlowFast)
+    # Step 04
+    maybe_run(
+        4,
+        "Tracking",
+        [pose_tracks],
+        [pose_keypoints],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "03_track_and_smooth.py",
+            ["--in", str(pose_keypoints), "--video", str(video_path), "--out", str(pose_tracks)],
+        ),
+    )
+
+    # Step 05
     def _run05():
         cmd_args = [
-            "--video", str(video_path),
-            "--pose", str(pose_tracks),
-            "--out", str(actions_jsonl),
-            "--emb_out", str(embeddings_pkl)
+            "--video",
+            str(video_path),
+            "--pose",
+            str(pose_tracks),
+            "--out",
+            str(actions_jsonl),
+            "--emb_out",
+            str(embeddings_pkl),
+            "--save_keyframes",
+            str(int(args.enable_mllm)),
+            "--keyframe_dir",
+            str(keyframe_dir),
         ]
         if args.action_model:
             cmd_args += ["--model_weight", resolve_model_or_fail(args.action_model)]
         run_step(py, scripts_dir / "05_slowfast_actions.py", cmd_args)
 
-    maybe_run(5, "SlowFast Behavior Recognition", [actions_jsonl, embeddings_pkl], [video_path, pose_tracks],
-              args.force,
-              args.from_step, _run05)
+    maybe_run(
+        5,
+        "SlowFast Behavior Recognition",
+        [actions_jsonl, embeddings_pkl],
+        [video_path, pose_tracks],
+        args.force,
+        args.from_step,
+        _run05,
+    )
 
-    # Step 05.5: Action/Object Fusion
+    # Step 55
     if int(args.fuse_action_obj) == 1:
-        maybe_run(55, "Action/Object Fusion", [actions_fused_jsonl], [actions_jsonl, objects_jsonl],
-                  args.force, args.from_step,
-                  lambda: run_step(py, scripts_dir / "05b_fuse_actions_with_objects.py",
-                                   ["--actions", str(actions_jsonl),
-                                    "--objects", str(objects_jsonl),
-                                    "--out", str(actions_fused_jsonl),
-                                    "--window", str(args.fuse_window),
-                                    "--alpha", str(args.fuse_alpha),
-                                    "--beta", str(args.fuse_beta)]))
+        maybe_run(
+            55,
+            "Action/Object Fusion",
+            [actions_fused_jsonl],
+            [actions_jsonl, objects_jsonl],
+            args.force,
+            args.from_step,
+            lambda: run_step(
+                py,
+                scripts_dir / "05b_fuse_actions_with_objects.py",
+                [
+                    "--actions",
+                    str(actions_jsonl),
+                    "--objects",
+                    str(objects_jsonl),
+                    "--out",
+                    str(actions_fused_jsonl),
+                    "--window",
+                    str(args.fuse_window),
+                    "--alpha",
+                    str(args.fuse_alpha),
+                    "--beta",
+                    str(args.fuse_beta),
+                ],
+            ),
+        )
 
-    actions_for_downstream = actions_fused_jsonl if actions_fused_jsonl.exists() else actions_jsonl
+    actions_for_downstream = (
+        actions_fused_jsonl if int(args.fuse_action_obj) == 1 and actions_fused_jsonl.exists() else actions_jsonl
+    )
 
-    # Step 06: ASR
-    maybe_run(6, "ASR", [transcript_jsonl], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "06_api_asr_realtime.py",
-                               ["--video", str(video_path), "--out_dir", str(out_dir)]))
+    # Step 06
+    maybe_run(
+        6,
+        "ASR",
+        [transcript_jsonl],
+        [video_path],
+        args.force,
+        args.from_step,
+        lambda: run_step(py, scripts_dir / "06_api_asr_realtime.py", ["--video", str(video_path), "--out_dir", str(out_dir)]),
+    )
 
-    # Step 07: Merge Data
-    maybe_run(7, "Merge Data", [per_person_json], [actions_for_downstream, transcript_jsonl], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "07_dual_verification.py",
-                               ["--actions", str(actions_for_downstream), "--transcript", str(transcript_jsonl), "--out",
-                                str(per_person_json), "--fps", fps_str]))
+    # Step 07 (+Peer)
+    maybe_run(
+        7,
+        "Dual Verification + Peer Aware",
+        [per_person_json],
+        [actions_for_downstream, transcript_jsonl, pose_tracks],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "07_dual_verification.py",
+            [
+                "--actions",
+                str(actions_for_downstream),
+                "--transcript",
+                str(transcript_jsonl),
+                "--out",
+                str(per_person_json),
+                "--fps",
+                fps_str,
+                "--pose_tracks",
+                str(pose_tracks),
+                "--enable_peer_aware",
+                str(int(args.enable_peer_aware)),
+                "--peer_radius",
+                str(float(args.peer_radius)),
+            ],
+        ),
+    )
 
-    # Step 08: Overlay Video
-    if not args.skip_video:
-        maybe_run(8, "Overlay Video", [overlay_video], [video_path, actions_for_downstream, transcript_jsonl], args.force,
-                  args.from_step,
-                  lambda: run_step(py, scripts_dir / "08_overlay_sequences.py",
-                                   ["--video", str(video_path), "--actions", str(actions_for_downstream), "--transcript",
-                                    str(transcript_jsonl), "--out_dir", str(out_dir), "--name", name, "--mux_audio",
-                                    "1", "--out_video", str(overlay_video)]))
+    # Step 14 (optional MLLM)
+    if int(args.enable_mllm) == 1:
+        maybe_run(
+            14,
+            "MLLM Semantic Verify",
+            [mllm_verified_json],
+            [per_person_json, embeddings_pkl, transcript_jsonl, video_path],
+            args.force,
+            args.from_step,
+            lambda: run_step(
+                py,
+                scripts_dir / "14_mllm_semantic_verify.py",
+                [
+                    "--per_person",
+                    str(per_person_json),
+                    "--emb",
+                    str(embeddings_pkl),
+                    "--transcript",
+                    str(transcript_jsonl),
+                    "--video",
+                    str(video_path),
+                    "--out",
+                    str(mllm_verified_json),
+                    "--mllm_model",
+                    str(args.mllm_model),
+                    "--quantize",
+                    str(args.mllm_quantize),
+                    "--keyframe_interval",
+                    str(int(args.mllm_keyframe_interval)),
+                    "--enable_cca",
+                    str(int(args.enable_cca)),
+                    "--enable_dqd",
+                    str(int(args.enable_dqd)),
+                ],
+            ),
+        )
 
-    # Step 09: Objects Demo Video
-    maybe_run(9, "Objects Demo Video", [objects_demo_video], [video_path, objects_jsonl],
-              args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "03b_objects_video_demo.py",
-                               ["--video", str(video_path),
-                                "--objects", str(objects_jsonl),
-                                "--out", str(objects_demo_video),
-                                "--mux_audio", "1",
-                                "--conf", "0.2",
-                                "--show_empty", "1"]))
-
-    # Step 11: Group Interaction Analysis (ST-GCN)
+    # Step 11 (+IGFormer)
     def _run11():
         cmd_args = [
-            "--pose", str(pose_tracks),
-            "--out", str(group_events_jsonl)
+            "--pose",
+            str(pose_tracks),
+            "--actions",
+            str(actions_for_downstream),
+            "--out",
+            str(group_events_jsonl),
+            "--fps",
+            fps_str,
+            "--width",
+            str(int(video_w) if video_w > 0 else 1920),
+            "--height",
+            str(int(video_h) if video_h > 0 else 1080),
+            "--interaction_model",
+            args.interaction_model,
+            "--dsig_k",
+            str(int(args.dsig_k)),
+            "--sdig_threshold",
+            str(float(args.sdig_threshold)),
         ]
         if args.stgcn_weight:
             cmd_args += ["--model_weight", resolve_model_or_fail(args.stgcn_weight)]
         run_step(py, scripts_dir / "11_group_stgcn.py", cmd_args)
 
-    maybe_run(11, "Group Interactions (ST-GCN)", [group_events_jsonl], [pose_tracks],
-              args.force, args.from_step, _run11)
+    maybe_run(
+        11,
+        "Group Interaction Analysis",
+        [group_events_jsonl],
+        [pose_tracks, actions_for_downstream],
+        args.force,
+        args.from_step,
+        _run11,
+    )
 
-    # Step 12: Feature Extraction
-    def _run12():
-        run_step(py, scripts_dir / "12_export_features.py",
-                 ["--src", str(per_person_json), "--out", str(student_features_json)])
+    features_src = mllm_verified_json if int(args.enable_mllm) == 1 and mllm_verified_json.exists() else per_person_json
 
-    maybe_run(12, "Feature Extraction", [student_features_json], [per_person_json],
-              args.force, args.from_step, _run12)
+    # Step 12
+    maybe_run(
+        12,
+        "Feature Extraction",
+        [student_features_json],
+        [features_src],
+        args.force,
+        args.from_step,
+        lambda: run_step(py, scripts_dir / "12_export_features.py", ["--src", str(features_src), "--out", str(student_features_json)]),
+    )
 
-    # Step 13: Semantic Projection
-    def _run13():
-        cmd_args = [
-            "--emb", str(embeddings_pkl),
-            "--meta", str(student_features_json),
-            "--out", str(student_projection_json),
-            "--n_clusters", "3"
-        ]
-        run_step(py, scripts_dir / "13_semantic_projection.py", cmd_args)
+    # Step 13
+    maybe_run(
+        13,
+        "Semantic Projection",
+        [student_projection_json],
+        [embeddings_pkl, student_features_json],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "13_semantic_projection.py",
+            [
+                "--emb",
+                str(embeddings_pkl),
+                "--meta",
+                str(student_features_json),
+                "--out",
+                str(student_projection_json),
+                "--n_clusters",
+                "3",
+            ],
+        ),
+    )
 
-    maybe_run(13, "Semantic Projection (UMAP)", [student_projection_json],
-              [embeddings_pkl, student_features_json], args.force, args.from_step, _run13)
+    # Step 08
+    if not args.skip_video:
+        overlay_inputs = [video_path, actions_for_downstream, transcript_jsonl, group_events_jsonl]
+        if int(args.enable_mllm) == 1 and mllm_verified_json.exists():
+            overlay_inputs.append(mllm_verified_json)
+        maybe_run(
+            108,
+            "Overlay Video",
+            [overlay_video],
+            overlay_inputs,
+            args.force,
+            args.from_step,
+            lambda: run_step(
+                py,
+                scripts_dir / "08_overlay_sequences.py",
+                [
+                    "--video",
+                    str(video_path),
+                    "--actions",
+                    str(actions_for_downstream),
+                    "--transcript",
+                    str(transcript_jsonl),
+                    "--pose_tracks",
+                    str(pose_tracks),
+                    "--group_src",
+                    str(group_events_jsonl),
+                    "--mllm_src",
+                    str(mllm_verified_json),
+                    "--out_dir",
+                    str(out_dir),
+                    "--name",
+                    name,
+                    "--mux_audio",
+                    "1",
+                    "--out_video",
+                    str(overlay_video),
+                ],
+            ),
+        )
 
-    # Step 10: Generate Timeline Chart
+    # Step 10
     if not args.skip_vis:
-        maybe_run(10, "Generate Timeline Chart", [timeline_png], [per_person_json, group_events_jsonl],
-                  args.force, args.from_step,
-                  lambda: run_step(py, scripts_dir / "10_visualize_timeline.py",
-                                   ["--src", str(per_person_json),
-                                    "--out", str(timeline_png),
-                                    "--group_src", str(group_events_jsonl),
-                                    "--gap_tol", str(args.viz_gap_tol),
-                                    "--min_dur", str(args.viz_min_dur),
-                                    "--fps", fps_str]))
+        timeline_inputs = [per_person_json, group_events_jsonl]
+        if int(args.enable_mllm) == 1 and mllm_verified_json.exists():
+            timeline_inputs.append(mllm_verified_json)
+        maybe_run(
+            110,
+            "Timeline Visualization",
+            [timeline_png],
+            timeline_inputs,
+            args.force,
+            args.from_step,
+            lambda: run_step(
+                py,
+                scripts_dir / "10_visualize_timeline.py",
+                [
+                    "--src",
+                    str(per_person_json),
+                    "--group_src",
+                    str(group_events_jsonl),
+                    "--mllm_src",
+                    str(mllm_verified_json),
+                    "--out",
+                    str(timeline_png),
+                    "--gap_tol",
+                    str(args.viz_gap_tol),
+                    "--min_dur",
+                    str(args.viz_min_dur),
+                    "--fps",
+                    fps_str,
+                ],
+            ),
+        )
 
     if int(args.export_compat) == 1:
         case_id = args.case_id or name
@@ -415,10 +715,15 @@ def main():
             fps_hint=args.fps,
         )
 
-    print(f"\n✅ All Steps Completed! Results in: {out_dir}")
-    print(f"👉 Pose Demo Video      : {pose_demo_video}")
-    print(f"👉 Semantic Projection  : {student_projection_json}")
-    print(f"👉 Group Events         : {group_events_jsonl}")
+    print("\n[DONE] Pipeline completed")
+    print(f"Output dir            : {out_dir}")
+    print(f"Pose tracks           : {pose_tracks}")
+    print(f"Actions downstream    : {actions_for_downstream}")
+    print(f"Group events          : {group_events_jsonl}")
+    if int(args.enable_mllm) == 1:
+        print(f"MLLM verified         : {mllm_verified_json}")
+    print(f"Features              : {student_features_json}")
+    print(f"Projection            : {student_projection_json}")
 
 
 if __name__ == "__main__":

@@ -205,6 +205,8 @@ def main():
     parser.add_argument("--out", type=str, required=True, help="actions.jsonl")
     parser.add_argument("--model_weight", type=str, default="", help="path to custom .pth")
     parser.add_argument("--emb_out", type=str, default="", help="output path for embeddings.pkl")
+    parser.add_argument("--save_keyframes", type=int, default=0, help="1=save keyframes for MLLM")
+    parser.add_argument("--keyframe_dir", type=str, default="", help="keyframe output dir")
 
     args = parser.parse_args()
 
@@ -218,6 +220,11 @@ def main():
     if not out_path.is_absolute(): out_path = base_dir / out_path
 
     emb_out_path = Path(args.emb_out) if args.emb_out else out_path.parent / "embeddings.pkl"
+    keyframe_dir = Path(args.keyframe_dir) if args.keyframe_dir else out_path.parent / "keyframes"
+    if not keyframe_dir.is_absolute():
+        keyframe_dir = base_dir / keyframe_dir
+    if int(args.save_keyframes) == 1:
+        keyframe_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. 加载模型
     recognizer = ActionRecognizer(model_path=args.model_weight, device=get_device())
@@ -271,11 +278,18 @@ def main():
                 if recognizer.current_embedding is not None:
                     # current_embedding 是 batch=1 的数组 (1, 2304)
                     emb_vec = recognizer.current_embedding[0]
-                    track_embeddings[tid].append(emb_vec)
+                    track_embeddings[tid].append(
+                        ((int(frame_idx), int(frame_idx + INFERENCE_STRIDE)), np.asarray(emb_vec, dtype=np.float32))
+                    )
 
                 label = CLASS_LABELS.get(cls_idx, "unknown")
                 timestamp = frame_idx / fps
                 duration = INFERENCE_STRIDE / fps
+                keyframe_path = ""
+                if int(args.save_keyframes) == 1:
+                    keyframe_name = f"tid{tid}_f{frame_idx:06d}.jpg"
+                    keyframe_path = str((keyframe_dir / keyframe_name).resolve())
+                    cv2.imwrite(keyframe_path, frame)
 
                 actions_out.append({
                     "track_id": tid,
@@ -287,7 +301,8 @@ def main():
                     "start_frame": frame_idx,
                     "end_frame": frame_idx + INFERENCE_STRIDE,
                     "frame": frame_idx,
-                    "t": timestamp
+                    "t": timestamp,
+                    "keyframe_path": keyframe_path
                 })
 
                 if len(actions_out) % 10 == 0:

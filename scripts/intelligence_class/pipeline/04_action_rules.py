@@ -210,6 +210,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="in_path", type=str, required=True)
     parser.add_argument("--out", dest="out_path", type=str, required=True)
+    parser.add_argument("--baseline_tag", type=str, default="rule_baseline")
     parser.add_argument("--fps", dest="fps", type=float, default=25.0)
     parser.add_argument("--raise_hand_sec", type=float, default=0.5)
     parser.add_argument("--head_down_sec", type=float, default=0.7)
@@ -233,6 +234,9 @@ def main():
         stand_sec=float(args.stand_sec),
         min_track_frames=int(args.min_track_frames),
     )
+
+    for e in events:
+        e.setdefault("source", str(args.baseline_tag))
 
     with open(out_path, "w", encoding="utf-8") as f:
         for e in events:

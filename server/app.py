@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import json
 from pathlib import Path
@@ -17,7 +17,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import MDS, TSNE
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
-# 尝试导入 Levenshtein，如果没有就用简化版
+# 灏濊瘯瀵煎叆 Levenshtein锛屽鏋滄病鏈夊氨鐢ㄧ畝鍖栫増
 try:
     import Levenshtein  # type: ignore
 except Exception:
@@ -25,14 +25,14 @@ except Exception:
 
 
 # =========================================================
-# 1) 路径：优先使用 paths.py（与你 scripts/ 中一致）
+# 1) 璺緞锛氫紭鍏堜娇鐢?paths.py锛堜笌浣?scripts/ 涓竴鑷达級
 # =========================================================
 def _try_import_paths():
     try:
         import paths  # type: ignore
         return paths
     except Exception:
-        # 允许从 server 目录导入失败时，手动加路径
+        # 鍏佽浠?server 鐩綍瀵煎叆澶辫触鏃讹紝鎵嬪姩鍔犺矾寰?
         server_dir = os.path.dirname(os.path.abspath(__file__))
         sys.path.append(server_dir)
         try:
@@ -44,19 +44,19 @@ def _try_import_paths():
 
 paths_mod = _try_import_paths()
 
-# 没有 paths.py 就按项目结构推断
+# 娌℃湁 paths.py 灏辨寜椤圭洰缁撴瀯鎺ㄦ柇
 BASE_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path(getattr(paths_mod, "PROJECT_ROOT", BASE_DIR)).resolve()
 OUTPUT_DIR = Path(getattr(paths_mod, "OUTPUT_DIR", PROJECT_ROOT / "output")).resolve()
 DATA_DIR = Path(getattr(paths_mod, "DATA_DIR", PROJECT_ROOT / "data")).resolve()
 VIDEO_DIR = (DATA_DIR / "videos").resolve()
 
-# 你的前端模板一般在 web_viz/templates；如果没有就回退到项目根目录
+# 浣犵殑鍓嶇妯℃澘涓€鑸湪 web_viz/templates锛涘鏋滄病鏈夊氨鍥為€€鍒伴」鐩牴鐩綍
 TEMPLATE_DIR = (PROJECT_ROOT / "web_viz" / "templates")
 if not TEMPLATE_DIR.exists():
     TEMPLATE_DIR = PROJECT_ROOT
 
-# 静态资源目录：web_viz/static 或项目根
+# 闈欐€佽祫婧愮洰褰曪細web_viz/static 鎴栭」鐩牴
 STATIC_DIR = (PROJECT_ROOT / "web_viz" / "static")
 if not STATIC_DIR.exists():
     STATIC_DIR = PROJECT_ROOT
@@ -72,23 +72,23 @@ app.add_middleware(
 )
 
 # =========================================================
-# 2) 静态文件挂载（兼容旧路径：/output /data）
+# 2) 闈欐€佹枃浠舵寕杞斤紙鍏煎鏃ц矾寰勶細/output /data锛?
 # =========================================================
-# 兼容你 .txt Flask 版：/output/<path:filename> -> output目录 :contentReference[oaicite:2]{index=2}
+# 鍏煎浣?.txt Flask 鐗堬細/output/<path:filename> -> output鐩綍 :contentReference[oaicite:2]{index=2}
 if OUTPUT_DIR.exists():
     app.mount("/output", StaticFiles(directory=str(OUTPUT_DIR)), name="output")
-    # 也给一个别名：/outputs
+    # 涔熺粰涓€涓埆鍚嶏細/outputs
     app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 
-# 兼容你 .txt Flask 版：/data/<path:filename> -> data目录 :contentReference[oaicite:3]{index=3}
+# 鍏煎浣?.txt Flask 鐗堬細/data/<path:filename> -> data鐩綍 :contentReference[oaicite:3]{index=3}
 if DATA_DIR.exists():
     app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
 
-# 视频别名（更直观）
+# 瑙嗛鍒悕锛堟洿鐩磋锛?
 if VIDEO_DIR.exists():
     app.mount("/videos", StaticFiles(directory=str(VIDEO_DIR)), name="videos")
 
-# 静态资源
+# 闈欐€佽祫婧?
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -118,7 +118,10 @@ def _looks_like_case_dir(case_dir: Path) -> bool:
     markers = [
         "timeline_chart.json",
         "per_person_sequences.json",
+        "verified_events.jsonl",
+        "event_queries.jsonl",
         "pose_tracks_smooth.jsonl",
+        "pose_tracks_smooth_uq.jsonl",
         "actions.jsonl",
         "actions_fused.jsonl",
         "student_projection.json",
@@ -126,8 +129,71 @@ def _looks_like_case_dir(case_dir: Path) -> bool:
     return any((case_dir / m).exists() for m in markers)
 
 
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _load_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows
+
+
+def _timeline_from_verified_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        win = row.get("window", {})
+        if isinstance(win, dict):
+            st = float(win.get("start", row.get("window_start", row.get("query_time", 0.0))))
+            ed = float(win.get("end", row.get("window_end", row.get("query_time", st + 0.3))))
+        else:
+            st = float(row.get("window_start", row.get("query_time", 0.0)))
+            ed = float(row.get("window_end", row.get("query_time", st + 0.3)))
+        if ed <= st:
+            ed = st + 0.3
+        label = str(row.get("match_label", row.get("label", "mismatch")))
+        if label == "match":
+            action_id = 0
+        elif label == "uncertain":
+            action_id = 1
+        else:
+            action_id = 2
+        items.append(
+            {
+                "type": "verified_event",
+                "track_id": int(row.get("track_id", -1)),
+                "start": st,
+                "end": ed,
+                "action_id": action_id,
+                "action_label": label,
+                "query_id": row.get("query_id", row.get("event_id")),
+                "event_type": row.get("event_type"),
+                "query_text": row.get("query_text"),
+                "reliability": float(row.get("reliability_score", row.get("reliability", 0.0))),
+                "match_score": float(row.get("p_match", row.get("match_score", 0.0))),
+                "row": int(row.get("track_id", -1)),
+            }
+        )
+    return {"items": items}
+
+
 # =========================================================
-# 3) 小工具：简易 Levenshtein（无三方库时兜底）
+# 3) 灏忓伐鍏凤細绠€鏄?Levenshtein锛堟棤涓夋柟搴撴椂鍏滃簳锛?
 # =========================================================
 def simple_levenshtein(seq1: str, seq2: str) -> float:
     size_x = len(seq1) + 1
@@ -183,22 +249,28 @@ def _fit_tsne(data: np.ndarray, metric: str, random_state: int = 42) -> np.ndarr
 
 
 # =========================================================
-# 4) 缓存读取：timeline/stats/transcript/tracks
+# 4) 缂撳瓨璇诲彇锛歵imeline/stats/transcript/tracks
 # =========================================================
 @lru_cache(maxsize=32)
 def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
     case_dir = _find_case_dir(video_id)
     if case_dir is None:
         return None
-    # 先找 timeline_chart.json（你现在 step10 生成的是 *.json，结构 {"items": [...]}） :contentReference[oaicite:4]{index=4}
+    # 鍏堟壘 timeline_chart.json锛堜綘鐜板湪 step10 鐢熸垚鐨勬槸 *.json锛岀粨鏋?{"items": [...]}锛?:contentReference[oaicite:4]{index=4}
     p1 = case_dir / "timeline_chart.json"
     if p1.exists():
         return json.loads(p1.read_text(encoding="utf-8"))
 
-    # 回退 timeline_data.json
+    # 鍥為€€ timeline_data.json
     p2 = case_dir / "timeline_data.json"
     if p2.exists():
         return json.loads(p2.read_text(encoding="utf-8"))
+
+    p3 = case_dir / "verified_events.jsonl"
+    if p3.exists():
+        rows = _load_jsonl_rows(p3)
+        if rows:
+            return _timeline_from_verified_rows(rows)
 
     return None
 
@@ -237,10 +309,19 @@ def load_transcript_data_cached(video_id: str) -> List[Dict[str, Any]]:
     return data
 
 
+@lru_cache(maxsize=32)
+def load_verified_events_cached(video_id: str) -> List[Dict[str, Any]]:
+    case_dir = _find_case_dir(video_id)
+    if case_dir is None:
+        return []
+    p = case_dir / "verified_events.jsonl"
+    return _load_jsonl_rows(p)
+
+
 @lru_cache(maxsize=16)
 def load_tracks_data_cached(video_id: str) -> Dict[str, Any]:
     """
-    返回结构:
+    杩斿洖缁撴瀯:
     {
       "12": [{"id": 3, "box": [x1,y1,x2,y2]}, ...],
       "13": ...
@@ -250,6 +331,8 @@ def load_tracks_data_cached(video_id: str) -> Dict[str, Any]:
     if case_dir is None:
         return {}
     p = case_dir / "pose_tracks_smooth.jsonl"
+    if not p.exists():
+        p = case_dir / "pose_tracks_smooth_uq.jsonl"
     if not p.exists():
         return {}
 
@@ -271,7 +354,7 @@ def load_tracks_data_cached(video_id: str) -> Dict[str, Any]:
 
 
 # =========================================================
-# 5) 核心：Projection（支持 euclidean / levenshtein + pca/mds/tsne）
+# 5) 鏍稿績锛歅rojection锛堟敮鎸?euclidean / levenshtein + pca/mds/tsne锛?
 # =========================================================
 @lru_cache(maxsize=64)
 def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[str, Any]:
@@ -283,13 +366,13 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
     if not isinstance(items, list):
         items = []
 
-    # --- 构建每个人的数据 ---
+    # --- 鏋勫缓姣忎釜浜虹殑鏁版嵁 ---
     person_data: Dict[int, Dict[str, Any]] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
 
-        # 只处理 person 行；group 行会用 track_id = -1（你生成 json 时就是这么干的） :contentReference[oaicite:5]{index=5}
+        # 鍙鐞?person 琛岋紱group 琛屼細鐢?track_id = -1锛堜綘鐢熸垚 json 鏃跺氨鏄繖涔堝共鐨勶級 :contentReference[oaicite:5]{index=5}
         if item.get("type", "person") != "person":
             continue
 
@@ -346,7 +429,7 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
         elif method == "tsne":
             coords = _fit_tsne(X, metric="euclidean", random_state=42)
         else:
-            # 不认识就回退
+            # 涓嶈璇嗗氨鍥為€€
             coords = PCA(n_components=2).fit_transform(X)
 
     # -------- B) Sequence-based: metric = levenshtein --------
@@ -354,7 +437,7 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
         sequences: List[str] = []
         for tid in track_ids:
             acts = sorted(person_data[tid]["actions"], key=lambda x: x["start"])
-            # 简单拼接 action_id 字符串
+            # 绠€鍗曟嫾鎺?action_id 瀛楃涓?
             seq_str = "".join([str(int(a["code"])) for a in acts])
             sequences.append(seq_str)
 
@@ -369,7 +452,7 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
                 max_len = max(len(sequences[i]), len(sequences[j]), 1)
                 dist_matrix[i, j] = dist_matrix[j, i] = d / float(max_len)
 
-        # PCA 不能处理距离矩阵，强制回落到 MDS
+        # PCA 涓嶈兘澶勭悊璺濈鐭╅樀锛屽己鍒跺洖钀藉埌 MDS
         if method == "pca":
             method = "mds"
 
@@ -381,10 +464,10 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
             coords = _make_mds("precomputed", random_state=42).fit_transform(dist_matrix)
 
     else:
-        # 未知 metric
+        # 鏈煡 metric
         return {"method": method, "metric": metric, "points": []}
 
-    # 归一化到 0-1
+    # 褰掍竴鍖栧埌 0-1
     coords = MinMaxScaler().fit_transform(coords)
 
     points = []
@@ -395,20 +478,20 @@ def compute_projection_cached(video_id: str, method: str, metric: str) -> Dict[s
 
 
 # =========================================================
-# 6) 路由：HTML + API
+# 6) 璺敱锛欻TML + API
 # =========================================================
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """
-    主页：默认渲染 templates/index.html
-    如果你暂时没做模板，也会回退到 PROJECT_ROOT/index.html
+    涓婚〉锛氶粯璁ゆ覆鏌?templates/index.html
+    濡傛灉浣犳殏鏃舵病鍋氭ā鏉匡紝涔熶細鍥為€€鍒?PROJECT_ROOT/index.html
     """
-    # 优先 templates
+    # 浼樺厛 templates
     index_tpl = Path(TEMPLATE_DIR) / "index.html"
     if index_tpl.exists():
         return templates.TemplateResponse("index.html", {"request": request})
 
-    # 回退到根目录 index.html
+    # 鍥為€€鍒版牴鐩綍 index.html
     index_file = PROJECT_ROOT / "index.html"
     if index_file.exists():
         return FileResponse(str(index_file))
@@ -419,18 +502,18 @@ async def index(request: Request):
 @app.get("/api/list_cases")
 def list_cases():
     """
-    自动扫描 output 目录，告诉前端有哪些 demo 可用（兼容你 txt 的 Flask 接口） :contentReference[oaicite:6]{index=6}
+    鑷姩鎵弿 output 鐩綍锛屽憡璇夊墠绔湁鍝簺 demo 鍙敤锛堝吋瀹逛綘 txt 鐨?Flask 鎺ュ彛锛?:contentReference[oaicite:6]{index=6}
     """
     if not OUTPUT_DIR.exists():
         return []
-    # 递归扫描“真正的 case 目录”，避免把“教师视角/斜上方视角1”这种视角父目录误当成 case。
+    # 閫掑綊鎵弿鈥滅湡姝ｇ殑 case 鐩綍鈥濓紝閬垮厤鎶娾€滄暀甯堣瑙?鏂滀笂鏂硅瑙?鈥濊繖绉嶈瑙掔埗鐩綍璇綋鎴?case銆?
     case_dirs = [d for d in OUTPUT_DIR.rglob("*") if d.is_dir() and _looks_like_case_dir(d)]
     cases: List[Dict[str, str]] = []
     for case_dir in case_dirs:
         rel_parts = case_dir.relative_to(OUTPUT_DIR).parts
         view_name = ""
         if len(rel_parts) >= 2:
-            # 新结构通常是 .../<view>/<video_id>
+            # 鏂扮粨鏋勯€氬父鏄?.../<view>/<video_id>
             view_name = rel_parts[-2]
         video_id = case_dir.name
         cases.append({
@@ -440,7 +523,7 @@ def list_cases():
             "path": str(case_dir),
         })
 
-    # 去重（同名 video_id 可能出现在不同缓存目录）
+    # 鍘婚噸锛堝悓鍚?video_id 鍙兘鍑虹幇鍦ㄤ笉鍚岀紦瀛樼洰褰曪級
     uniq: Dict[str, Dict[str, str]] = {}
     for c in cases:
         key = c["video_id"]
@@ -467,6 +550,8 @@ def get_media(video_id: str):
         "objects_demo": _to_output_url(case_dir / "objects_demo_out.mp4") if (case_dir / "objects_demo_out.mp4").exists() else None,
         "timeline_png": _to_output_url(case_dir / "timeline_chart.png") if (case_dir / "timeline_chart.png").exists() else None,
         "projection_json": _to_output_url(case_dir / "student_projection.json") if (case_dir / "student_projection.json").exists() else None,
+        "verified_events": _to_output_url(case_dir / "verified_events.jsonl") if (case_dir / "verified_events.jsonl").exists() else None,
+        "event_queries": _to_output_url(case_dir / "event_queries.jsonl") if (case_dir / "event_queries.jsonl").exists() else None,
         "actions": _to_output_url(case_dir / "actions_fused.jsonl") if (case_dir / "actions_fused.jsonl").exists() else (
             _to_output_url(case_dir / "actions.jsonl") if (case_dir / "actions.jsonl").exists() else None
         ),
@@ -482,6 +567,7 @@ def get_case_manifest(video_id: str):
 
     expected = [
         "actions.jsonl", "actions_fused.jsonl", "transcript.jsonl", "pose_tracks_smooth.jsonl",
+        "pose_tracks_smooth_uq.jsonl", "event_queries.jsonl", "align_multimodal.json", "verified_events.jsonl",
         "pose_demo_out.mp4", "objects_demo_out.mp4", "student_projection.json", "timeline_chart.json",
         "timeline_chart.png", "group_events.jsonl", "per_person_sequences.json", "embeddings.pkl",
     ]
@@ -500,14 +586,18 @@ def get_case_manifest(video_id: str):
         "view": case_dir.parent.name if case_dir.parent != OUTPUT_DIR else "",
         "path": str(case_dir),
         "files": files,
-        "ready_for_frontend": any(f["name"] == "timeline_chart.json" and f["exists"] for f in files),
+        "ready_for_frontend": any(
+            (f["name"] == "timeline_chart.json" and f["exists"])
+            or (f["name"] == "verified_events.jsonl" and f["exists"])
+            for f in files
+        ),
     }
 
 
 @app.get("/api/config")
 def get_config():
     """
-    暴露部分配置（兼容你 txt 的 Flask 接口） :contentReference[oaicite:7]{index=7}
+    鏆撮湶閮ㄥ垎閰嶇疆锛堝吋瀹逛綘 txt 鐨?Flask 鎺ュ彛锛?:contentReference[oaicite:7]{index=7}
     """
     return {
         "project_root": str(PROJECT_ROOT),
@@ -523,7 +613,7 @@ def get_timeline(video_id: str):
     data = load_timeline_data_cached(video_id)
     if not data:
         raise HTTPException(404, "Timeline data not found")
-    # 统一输出 {"items": [...]}
+    # 缁熶竴杈撳嚭 {"items": [...]}
     if isinstance(data, list):
         return {"items": data}
     return {"items": data.get("items", [])}
@@ -537,14 +627,41 @@ def get_stats(video_id: str):
 @app.get("/api/transcript/{video_id}")
 def get_transcript(video_id: str):
     raw = load_transcript_data_cached(video_id)
-    # 输出尽量前端友好
+    verified_rows = load_verified_events_cached(video_id)
+
+    def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
+        return max(0.0, min(a1, b1) - max(a0, b0))
+
     out = []
     for l in raw:
+        st = _safe_float(l.get("start"), 0.0)
+        ed = _safe_float(l.get("end"), st)
+        if ed < st:
+            st, ed = ed, st
+
+        linked = []
+        for v in verified_rows:
+            q_t = _safe_float(v.get("query_time"), 0.0)
+            w_st = _safe_float(v.get("window_start", q_t), q_t)
+            w_ed = _safe_float(v.get("window_end", q_t), q_t)
+            if w_ed < w_st:
+                w_st, w_ed = w_ed, w_st
+            if _overlap(st, ed, w_st, w_ed) > 0 or (st <= q_t <= ed):
+                linked.append(v)
+
+        linked.sort(key=lambda x: _safe_float(x.get("reliability"), 0.0), reverse=True)
+        top = linked[0] if linked else None
+        label = str(top.get("label")) if top else ""
+
         out.append({
-            "start": l.get("start"),
-            "end": l.get("end"),
+            "start": st,
+            "end": ed,
             "text": l.get("text", l.get("sentence", "")),
-            "verified": bool(l.get("verified", False)),
+            "verified": bool(label == "match" or l.get("verified", False)),
+            "reliability": _safe_float(top.get("reliability"), 0.0) if top else 0.0,
+            "verification_label": label if label else None,
+            "event_id": top.get("event_id") if top else None,
+            "event_type": top.get("event_type") if top else None,
         })
     return out
 
@@ -566,7 +683,7 @@ def get_projection(video_id: str, method: str = "pca", metric: str = "euclidean"
 
 
 # =========================================================
-# 7) 启动
+# 7) 鍚姩
 # =========================================================
 if __name__ == "__main__":
     import uvicorn
@@ -578,3 +695,4 @@ if __name__ == "__main__":
     print("Open http://localhost:8000")
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

@@ -4,6 +4,10 @@ import argparse
 import math
 from collections import defaultdict
 
+LEGACY_NOTICE = (
+    "[LEGACY/EXPERIMENTAL] scripts/04_complex_logic.py is not part of the formal fixed-schema pipeline. "
+    "Use scripts/09_run_pipeline.py for default execution."
+)
 
 # ====== 1. 基础几何工具 ======
 def is_close(box_person, box_obj, threshold=0.1):
@@ -107,6 +111,7 @@ def determine_action(kpts, bbox, nearby_objects):
 
 # ====== 3. 主流程 ======
 def main():
+    print(LEGACY_NOTICE)
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     parser = argparse.ArgumentParser()

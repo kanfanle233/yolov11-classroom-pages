@@ -123,6 +123,25 @@ def _load_mllm(path: Optional[Path]) -> List[Dict[str, Any]]:
     return []
 
 
+def _load_verified_events(path: Optional[Path]) -> List[Dict[str, Any]]:
+    if path is None or not path.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    rows.sort(key=lambda x: (_safe_float(x.get("query_time", 0.0)), _safe_int(x.get("track_id", 10**9))))
+    return rows
+
+
 def _people_dict(people_raw: Any) -> Dict[str, Dict[str, Any]]:
     if isinstance(people_raw, dict):
         return {str(k): v for k, v in people_raw.items() if isinstance(v, dict)}
@@ -453,10 +472,124 @@ def draw_timeline(
     print(f"[DONE] timeline json: {json_path}")
 
 
+def draw_verified_timeline(
+    verified_rows: List[Dict[str, Any]],
+    out_path: Path,
+    t_min: Optional[float] = None,
+    t_max: Optional[float] = None,
+) -> None:
+    if not verified_rows:
+        raise ValueError("No verified events found")
+
+    label_colors = {
+        "match": "#2ecc71",
+        "uncertain": "#f1c40f",
+        "mismatch": "#e74c3c",
+    }
+
+    track_ids = sorted({int(r.get("track_id", -1)) for r in verified_rows})
+    row_index = {tid: i for i, tid in enumerate(track_ids)}
+
+    fig_h = max(4.2, min(0.42 * len(track_ids) + 2.0, 28))
+    fig, ax = plt.subplots(figsize=(18, fig_h))
+    max_t = 1.0
+
+    exported_items: List[Dict[str, Any]] = []
+    for row in verified_rows:
+        tid = int(row.get("track_id", -1))
+        y = row_index[tid]
+        win = row.get("window", {})
+        if isinstance(win, dict):
+            st = _safe_float(win.get("start", row.get("window_start", row.get("query_time", 0.0))))
+            ed = _safe_float(win.get("end", row.get("window_end", st + 0.3)))
+        else:
+            st = _safe_float(row.get("window_start", row.get("query_time", 0.0)))
+            ed = _safe_float(row.get("window_end", st + 0.3))
+        if ed <= st:
+            ed = st + 0.3
+        if t_min is not None and ed < t_min:
+            continue
+        if t_max is not None and st > t_max:
+            continue
+        st = max(st, t_min) if t_min is not None else st
+        ed = min(ed, t_max) if t_max is not None else ed
+        if ed <= st:
+            continue
+
+        label = str(row.get("match_label", row.get("label", "mismatch")))
+        reliability = max(
+            0.0,
+            min(1.0, _safe_float(row.get("reliability_score", row.get("reliability", 0.0)), 0.0)),
+        )
+        color = label_colors.get(label, "#95a5a6")
+        alpha = 0.35 + 0.65 * reliability
+
+        ax.barh(y, ed - st, left=st, height=0.66, color=color, alpha=alpha, linewidth=0, zorder=2)
+        if label == "mismatch":
+            q_t = _safe_float(row.get("query_time", st), st)
+            ax.scatter([q_t], [y], c="#111111", s=12, marker="x", zorder=4)
+
+        max_t = max(max_t, ed)
+        exported_items.append(
+            {
+                "type": "verified_event",
+                "track_id": tid,
+                "start": round(st, 3),
+                "end": round(ed, 3),
+                "query_time": round(
+                    _safe_float(
+                        row.get(
+                            "query_time",
+                            row.get("window", {}).get("center", row.get("window_center", 0.0))
+                            if isinstance(row.get("window"), dict)
+                            else row.get("window_center", 0.0),
+                        ),
+                        0.0,
+                    ),
+                    3,
+                ),
+                "query_id": row.get("query_id", row.get("event_id")),
+                "event_type": row.get("event_type"),
+                "label": label,
+                "reliability": round(reliability, 4),
+                "match_score": round(_safe_float(row.get("p_match", row.get("match_score", 0.0)), 0.0), 4),
+                "query_text": row.get("query_text", ""),
+                "color": color,
+            }
+        )
+
+    ax.set_yticks([row_index[tid] for tid in track_ids])
+    ax.set_yticklabels([f"ID {tid}" if tid >= 0 else "Unmatched" for tid in track_ids], fontsize=8)
+    ax.set_xlabel("Time (s)")
+    ax.set_title("Verified Events Timeline (Reliability-Aware)", fontsize=12)
+    ax.set_xlim(0, (t_max if t_max is not None else max_t) + 1.0)
+    ax.grid(axis="x", linestyle="--", linewidth=0.4, alpha=0.35)
+
+    legend_items = [
+        mpatches.Patch(color=label_colors["match"], label="match"),
+        mpatches.Patch(color=label_colors["uncertain"], label="uncertain"),
+        mpatches.Patch(color=label_colors["mismatch"], label="mismatch"),
+    ]
+    ax.legend(handles=legend_items, loc="upper center", bbox_to_anchor=(0.5, -0.07), ncol=3, frameon=False, fontsize=8)
+
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, dpi=240)
+    plt.close(fig)
+
+    json_path = out_path.with_suffix(".json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({"items": exported_items}, f, ensure_ascii=False, indent=2)
+
+    print(f"[DONE] verified timeline png: {out_path}")
+    print(f"[DONE] verified timeline json: {json_path}")
+
+
 def main():
     base_dir = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser()
     parser.add_argument("--src", required=True, help="per_person_sequences.json")
+    parser.add_argument("--verified_src", default="", help="verified_events.jsonl (preferred)")
     parser.add_argument("--out", required=True, help="timeline png path")
     parser.add_argument("--group_src", default="", help="group_events.jsonl")
     parser.add_argument("--mllm_src", default="", help="mllm_verified_sequences.json")
@@ -469,18 +602,31 @@ def main():
     args = parser.parse_args()
 
     src = Path(args.src)
+    verified_src = Path(args.verified_src) if args.verified_src else None
     out = Path(args.out)
     group_src = Path(args.group_src) if args.group_src else None
     mllm_src = Path(args.mllm_src) if args.mllm_src else None
 
     if not src.is_absolute():
         src = (base_dir / src).resolve()
+    if verified_src and not verified_src.is_absolute():
+        verified_src = (base_dir / verified_src).resolve()
     if not out.is_absolute():
         out = (base_dir / out).resolve()
     if group_src and not group_src.is_absolute():
         group_src = (base_dir / group_src).resolve()
     if mllm_src and not mllm_src.is_absolute():
         mllm_src = (base_dir / mllm_src).resolve()
+
+    verified_rows = _load_verified_events(verified_src)
+    if verified_rows:
+        draw_verified_timeline(
+            verified_rows=verified_rows,
+            out_path=out,
+            t_min=args.t_min,
+            t_max=args.t_max,
+        )
+        return
 
     with open(src, "r", encoding="utf-8") as f:
         data = json.load(f)

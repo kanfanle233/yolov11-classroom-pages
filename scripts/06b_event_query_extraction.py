@@ -80,7 +80,7 @@ def _load_transcript(path: Path) -> List[Dict[str, Any]]:
 
 def _make_query(
     *,
-    query_id: str,
+    event_id: str,
     event_type: str,
     query_text: str,
     trigger_text: str,
@@ -91,12 +91,14 @@ def _make_query(
 ) -> Dict[str, Any]:
     t_center = 0.5 * (start + end)
     return {
+        "event_id": event_id,
+        "query_id": event_id,
         "schema_version": SCHEMA_VERSION,
-        "query_id": query_id,
         "event_type": event_type,
         "query_text": query_text,
         "trigger_text": trigger_text,
         "trigger_words": list(trigger_words),
+        "timestamp": round(t_center, 3),
         "t_center": round(t_center, 3),
         "start": round(start, 3),
         "end": round(end, 3),
@@ -119,7 +121,7 @@ def _extract_events(segment: Dict[str, Any], q_index: int) -> List[Dict[str, Any
         confidence = min(0.95, 0.55 + 0.1 * len(matched))
         out.append(
             _make_query(
-                query_id=f"q_{q_index:06d}_{len(out):02d}",
+                event_id=f"e_{q_index:06d}_{len(out):02d}",
                 event_type=event_type,
                 query_text=query_text,
                 trigger_text=text,
@@ -137,7 +139,7 @@ def _extract_events(segment: Dict[str, Any], q_index: int) -> List[Dict[str, Any
         preview = normalized[:48] if normalized else "asr segment"
         out.append(
             _make_query(
-                query_id=f"q_{q_index:06d}_00",
+                event_id=f"e_{q_index:06d}_00",
                 event_type="unknown",
                 query_text=preview,
                 trigger_text=text,
@@ -153,7 +155,7 @@ def _extract_events(segment: Dict[str, Any], q_index: int) -> List[Dict[str, Any
 
 def _placeholder_query() -> Dict[str, Any]:
     return _make_query(
-        query_id="q_000000_00",
+        event_id="e_000000_00",
         event_type="unknown",
         query_text="unknown event",
         trigger_text="[ASR_EMPTY]",

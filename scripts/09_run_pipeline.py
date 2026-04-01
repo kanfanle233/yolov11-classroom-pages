@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -12,6 +12,8 @@ try:
     from paths import PROJECT_ROOT
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+from contracts.schemas import ARTIFACT_VERSION, SCHEMA_VERSION
 
 
 def run_step(py_exe: str, script: Path, args: List[str]) -> None:
@@ -128,24 +130,129 @@ def _is_placeholder_transcript(path: Path) -> bool:
     return True
 
 
-def _write_manifest_compat(
+def _load_json(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        obj = json.load(f)
+    if isinstance(obj, dict):
+        return obj
+    return {}
+
+
+def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not path.exists():
+        return out
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict):
+                out.append(row)
+    return out
+
+
+def _write_json(path: Path, obj: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
+def _convert_training_samples_to_contract(raw_samples_path: Path, contract_samples_path: Path) -> None:
+    rows = _iter_jsonl(raw_samples_path)
+    converted: List[Dict[str, Any]] = []
+    for row in rows:
+        event_id = str(row.get("event_id", row.get("query_id", "")))
+        target = int(row.get("target", 0))
+        sample_type = str(row.get("sample_type", "semantic_mismatch"))
+        converted.append(
+            {
+                "sample_id": str(row.get("sample_id", "")),
+                "event_id": event_id,
+                "sample_type": sample_type,
+                "query_text": str(row.get("query_text", "")),
+                "event_type": str(row.get("event_type", "unknown")),
+                "track_id": int(row.get("track_id", -1)),
+                "clip_start": float(row.get("clip_start", row.get("window_start", 0.0))),
+                "clip_end": float(row.get("clip_end", row.get("window_end", 0.0))),
+                "target_label": "match" if target == 1 else "mismatch",
+                "negative_kind": "" if sample_type == "positive" else sample_type,
+                "provenance": {
+                    "source": "verifier.dataset",
+                    "legacy_fields": {
+                        "overlap": float(row.get("overlap", 0.0)),
+                        "action_confidence": float(row.get("action_confidence", 0.0)),
+                        "uq_score": float(row.get("uq_score", 0.0)),
+                        "text_score": float(row.get("text_score", 0.0)),
+                    },
+                },
+            }
+        )
+    contract_samples_path.parent.mkdir(parents=True, exist_ok=True)
+    with contract_samples_path.open("w", encoding="utf-8") as f:
+        for row in converted:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _convert_reports_to_contract(
+    raw_report_path: Path,
+    eval_report_path: Path,
+    calibration_report_path: Path,
+) -> None:
+    report = _load_json(raw_report_path)
+    train_metrics = report.get("train_metrics", {}) if isinstance(report.get("train_metrics"), dict) else {}
+    val_metrics = report.get("val_metrics", {}) if isinstance(report.get("val_metrics"), dict) else {}
+    runtime_cfg = report.get("runtime_config", {}) if isinstance(report.get("runtime_config"), dict) else {}
+    sample_types = report.get("sample_types", {}) if isinstance(report.get("sample_types"), dict) else {}
+
+    counts = {
+        "total": int(report.get("num_samples", 0)),
+        "train": int(report.get("num_train", 0)),
+        "val": int(report.get("num_val", 0)),
+        "sample_types": sample_types,
+    }
+    eval_report = {
+        "split": "val",
+        "counts": counts,
+        "metrics": {
+            "train": train_metrics,
+            "val": val_metrics,
+        },
+        "config": runtime_cfg,
+        "artifact_version": ARTIFACT_VERSION,
+    }
+    calibration_report = {
+        "split": "val",
+        "ece": float(val_metrics.get("ece", 0.0)),
+        "brier": float(val_metrics.get("brier", 0.0)),
+        "temperature": float(runtime_cfg.get("temperature", 1.0)),
+        "bin_stats": [],
+        "artifact_version": ARTIFACT_VERSION,
+    }
+    _write_json(eval_report_path, eval_report)
+    _write_json(calibration_report_path, calibration_report)
+
+
+def _write_pipeline_manifest(
     *,
     out_dir: Path,
     case_id: str,
     video_id: str,
-    view_name: str,
-    files: List[Path],
+    artifacts: Dict[str, Path],
+    config_snapshot: Dict[str, Any],
 ) -> None:
     payload = {
         "case_id": case_id,
         "video_id": video_id,
-        "view": view_name,
-        "schema_mode": "fixed-contracts",
-        "files": {p.name: str(p) for p in files if p.exists()},
+        "schema_version": SCHEMA_VERSION,
+        "artifacts": {k: str(v) for k, v in artifacts.items() if v.exists()},
+        "config_snapshot": config_snapshot,
     }
-    manifest = out_dir / "pipeline_manifest.json"
-    with manifest.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    _write_json(out_dir / "pipeline_manifest.json", payload)
 
 
 def main() -> None:
@@ -211,8 +318,11 @@ def main() -> None:
     aligned_json = out_dir / "align_multimodal.json"
     verified_events_jsonl = out_dir / "verified_events.jsonl"
     verifier_model = Path(args.verifier_model).resolve() if args.verifier_model else (out_dir / "verifier.pt")
-    verifier_report = out_dir / "verifier_report.json"
-    verifier_samples = out_dir / "verifier_samples.jsonl"
+    verifier_report_raw = out_dir / "verifier_report.raw.json"
+    verifier_samples_raw = out_dir / "verifier_samples.raw.jsonl"
+    verifier_samples_train = out_dir / "verifier_samples_train.jsonl"
+    verifier_eval_report = out_dir / "verifier_eval_report.json"
+    verifier_calibration_report = out_dir / "verifier_calibration_report.json"
     per_person_json = out_dir / "per_person_sequences.json"
     timeline_png = out_dir / "timeline_chart.png"
     timeline_json = out_dir / "timeline_chart.json"
@@ -380,7 +490,7 @@ def main() -> None:
         maybe_run(
             67,
             "train verifier",
-            [verifier_model, verifier_report],
+            [verifier_model, verifier_report_raw],
             [event_queries_jsonl, aligned_json, actions_jsonl],
             args.force,
             args.from_step,
@@ -397,15 +507,27 @@ def main() -> None:
                     "--out_model",
                     str(verifier_model),
                     "--out_report",
-                    str(verifier_report),
+                    str(verifier_report_raw),
                     "--out_samples",
-                    str(verifier_samples),
+                    str(verifier_samples_raw),
                 ],
             ),
         )
 
+        if verifier_report_raw.exists():
+            _convert_reports_to_contract(
+                raw_report_path=verifier_report_raw,
+                eval_report_path=verifier_eval_report,
+                calibration_report_path=verifier_calibration_report,
+            )
+        if verifier_samples_raw.exists():
+            _convert_training_samples_to_contract(
+                raw_samples_path=verifier_samples_raw,
+                contract_samples_path=verifier_samples_train,
+            )
+
     maybe_run(
-        7,
+        70,
         "dual verification",
         [verified_events_jsonl],
         [event_queries_jsonl, aligned_json, pose_uq, actions_jsonl, verifier_model],
@@ -470,26 +592,35 @@ def main() -> None:
         else:
             view_code = args.view_code or args.view or "case"
             video_id = f"{view_code}__{case_id}"
-        _write_manifest_compat(
+        _write_pipeline_manifest(
             out_dir=out_dir,
             case_id=case_id,
             video_id=video_id,
-            view_name=args.view or "",
-            files=[
-                pose_keypoints,
-                pose_tracks,
-                pose_uq,
-                actions_jsonl,
-                transcript_jsonl,
-                event_queries_jsonl,
-                aligned_json,
-                verified_events_jsonl,
-                verifier_model,
-                verifier_report,
-                per_person_json,
-                timeline_png,
-                timeline_json,
-            ],
+            artifacts={
+                "pose_keypoints": pose_keypoints,
+                "pose_tracks_smooth": pose_tracks,
+                "pose_tracks_smooth_uq": pose_uq,
+                "actions": actions_jsonl,
+                "transcript": transcript_jsonl,
+                "event_queries": event_queries_jsonl,
+                "align_multimodal": aligned_json,
+                "verifier_samples_train": verifier_samples_train,
+                "verified_events": verified_events_jsonl,
+                "verifier_model": verifier_model,
+                "verifier_eval_report": verifier_eval_report,
+                "verifier_calibration_report": verifier_calibration_report,
+                "per_person_sequences": per_person_json,
+                "timeline_chart_png": timeline_png,
+                "timeline_chart_json": timeline_json,
+            },
+            config_snapshot={
+                "from_step": int(args.from_step),
+                "train_verifier": int(args.train_verifier),
+                "action_mode": str(args.action_mode),
+                "asr_backend": str(args.asr_backend),
+                "interaction_model": str(args.interaction_model),
+                "enable_mllm": int(args.enable_mllm),
+            },
         )
 
         # Keep legacy aliases for downstream tools that still consume old names.

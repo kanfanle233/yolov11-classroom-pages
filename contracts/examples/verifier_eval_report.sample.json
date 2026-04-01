@@ -1,0 +1,19 @@
+{
+  "split": "val",
+  "counts": {
+    "total": 320,
+    "match": 92,
+    "mismatch": 228
+  },
+  "metrics": {
+    "accuracy": 0.7438,
+    "f1_match": 0.611,
+    "f1_macro": 0.694
+  },
+  "config": {
+    "model_version": "verifier_v2.0",
+    "match_threshold": 0.6,
+    "uncertain_threshold": 0.4
+  },
+  "artifact_version": "formal_verifier_contracts@2026-04-01"
+}

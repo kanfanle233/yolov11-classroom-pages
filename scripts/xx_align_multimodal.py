@@ -71,12 +71,31 @@ def _build_uq_index(rows: List[Dict[str, Any]]) -> Dict[int, Dict[int, Dict[str,
     """
     out: Dict[int, Dict[int, Dict[str, float]]] = {}
     for row in rows:
+        # Contract v1: frame-level row with persons[].
+        if isinstance(row.get("frame"), int) and isinstance(row.get("persons"), list):
+            frame_idx = int(row["frame"])
+            for person in row["persons"]:
+                if not isinstance(person, dict):
+                    continue
+                track_id = person.get("track_id")
+                if not isinstance(track_id, int):
+                    continue
+                uq_track = _safe_float(person.get("uq_track", person.get("uq_score", 0.5)), 0.5)
+                uq_motion = _safe_float(person.get("uq_motion", 0.5), 0.5)
+                motion_stability = _safe_float(person.get("motion_stability", 1.0 - uq_motion), 1.0 - uq_motion)
+                out.setdefault(frame_idx, {})[track_id] = {
+                    "uq_score": uq_track,
+                    "motion_stability": motion_stability,
+                }
+            continue
+
+        # Legacy compatibility: one row per (frame_idx, track_id).
         frame_idx = row.get("frame_idx")
         track_id = row.get("track_id")
         if not isinstance(frame_idx, int) or not isinstance(track_id, int):
             continue
         out.setdefault(frame_idx, {})[track_id] = {
-            "uq_score": _safe_float(row.get("uq_score", 0.5), 0.5),
+            "uq_score": _safe_float(row.get("uq_score", row.get("uq_track", 0.5)), 0.5),
             "motion_stability": _safe_float(row.get("motion_stability", 0.5), 0.5),
         }
     return out
@@ -148,10 +167,10 @@ def main() -> None:
 
     aligned: List[Dict[str, Any]] = []
     for q in queries:
-        query_id = str(q.get("query_id", q.get("event_id", "")))
+        event_id = str(q.get("event_id", q.get("query_id", "")))
         event_type = str(q.get("event_type", "unknown"))
         query_text = str(q.get("query_text", ""))
-        t_center = _safe_float(q.get("t_center", q.get("timestamp", q.get("start", 0.0))), 0.0)
+        t_center = _safe_float(q.get("timestamp", q.get("t_center", q.get("start", 0.0))), 0.0)
 
         uq_basis, motion_basis, track_uq = _mean_uq_near(uq_index, t=t_center, fps=float(args.fps), radius_sec=1.0)
         window_size = _clamp(
@@ -176,6 +195,8 @@ def main() -> None:
                     "end_time": round(a["end_time"], 3),
                     "overlap": round(float(ov), 6),
                     "action_confidence": round(float(a["action_confidence"]), 6),
+                    "uq_track": round(float(track_uq.get(tid, uq_basis)), 6),
+                    # Compatibility alias.
                     "uq_score": round(float(track_uq.get(tid, uq_basis)), 6),
                 }
             )
@@ -183,24 +204,30 @@ def main() -> None:
         candidates = candidates[: max(1, int(args.topk))]
 
         row = {
-            "query_id": query_id,
+            "event_id": event_id,
+            "query_id": event_id,
             "event_type": event_type,
             "query_text": query_text,
+            "window_start": round(w_start, 3),
+            "window_end": round(w_end, 3),
+            "window_center": round(t_center, 3),
+            "window_size": round(window_size, 3),
+            "basis_motion": round(motion_basis, 6),
+            "basis_uq": round(uq_basis, 6),
+            # Compatibility aliases for existing readers.
             "window": {
                 "start": round(w_start, 3),
                 "end": round(w_end, 3),
                 "center": round(t_center, 3),
                 "size": round(window_size, 3),
             },
-            "window_center": round(t_center, 3),
-            "window_size": round(window_size, 3),
             "motion_basis": round(motion_basis, 6),
             "uq_basis": round(uq_basis, 6),
             "candidates": candidates,
         }
         ok, msg = validate_align_record(row)
         if not ok:
-            raise ValueError(f"align schema invalid for query_id={query_id}: {msg}")
+            raise ValueError(f"align schema invalid for event_id={event_id}: {msg}")
         aligned.append(row)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,4 +240,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

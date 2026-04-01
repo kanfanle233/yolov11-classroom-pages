@@ -92,6 +92,7 @@ def main() -> None:
         help="pose_tracks_smooth.jsonl",
     )
     parser.add_argument("--out", dest="out_path", required=True, type=str, help="pose_tracks_smooth_uq.jsonl")
+    parser.add_argument("--fps", type=float, default=25.0)
     parser.add_argument("--validate", type=int, default=1, help="1=validate output schema")
     args = parser.parse_args()
 
@@ -112,10 +113,12 @@ def main() -> None:
     with out_path.open("w", encoding="utf-8") as f:
         for frame_row in _iter_jsonl(in_path):
             frame_idx = int(frame_row.get("frame", 0))
+            t_sec = _safe_float(frame_row.get("t", frame_idx / max(1e-6, float(args.fps))), frame_idx / max(1e-6, float(args.fps)))
             persons = frame_row.get("persons", [])
             if not isinstance(persons, list):
                 continue
 
+            person_out: List[Dict[str, Any]] = []
             for person in persons:
                 if not isinstance(person, dict):
                     continue
@@ -152,21 +155,39 @@ def main() -> None:
                 if not uq_source:
                     uq_source.append("stable")
 
-                out_row = {
-                    "schema_version": SCHEMA_VERSION,
-                    "frame_idx": frame_idx,
-                    "track_id": int(track_id),
-                    "uq_score": round(uq_score, 6),
-                    "uq_source": uq_source,
-                    "visible_kpt_ratio": round(visible_ratio, 6),
-                    "motion_stability": round(motion_stability, 6),
-                    "bbox_stability": round(bbox_stability, 6),
-                }
-                f.write(json.dumps(out_row, ensure_ascii=False) + "\n")
-                rows_written += 1
+                person_out.append(
+                    {
+                        "track_id": int(track_id),
+                        "uq_track": round(uq_score, 6),
+                        "uq_conf": round(1.0 - visible_ratio, 6),
+                        "uq_motion": round(1.0 - motion_stability, 6),
+                        "uq_kpt": round(1.0 - bbox_stability, 6),
+                        # Reserved output for later learned UQ heads.
+                        "log_sigma2": round(math.log(max(1e-6, uq_score + 1e-4)), 6),
+                        # Compatibility fields (legacy reader support).
+                        "uq_score": round(uq_score, 6),
+                        "uq_source": uq_source,
+                        "visible_kpt_ratio": round(visible_ratio, 6),
+                        "motion_stability": round(motion_stability, 6),
+                        "bbox_stability": round(bbox_stability, 6),
+                    }
+                )
 
                 prev_kpts[track_id] = kpts
                 prev_bbox[track_id] = bbox
+
+            if not person_out:
+                continue
+            uq_frame = sum(float(p["uq_track"]) for p in person_out) / len(person_out)
+            out_row = {
+                "schema_version": SCHEMA_VERSION,
+                "frame": frame_idx,
+                "t": round(t_sec, 6),
+                "uq_frame": round(uq_frame, 6),
+                "persons": person_out,
+            }
+            f.write(json.dumps(out_row, ensure_ascii=False) + "\n")
+            rows_written += 1
 
     if int(args.validate) == 1:
         ok, _, errors = validate_jsonl_file(out_path, validate_pose_uq_record)

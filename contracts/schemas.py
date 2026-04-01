@@ -354,24 +354,101 @@ def validate_verified_event_record(row: JsonDict) -> Tuple[bool, str]:
 def validate_verifier_eval_report(obj: Any) -> Tuple[bool, str]:
     if not isinstance(obj, dict):
         return False, "report must be object"
-    required = ["split", "counts", "metrics", "config", "artifact_version"]
+    required = [
+        "split",
+        "counts",
+        "metrics",
+        "confusion_matrix",
+        "threshold_sweep",
+        "label_distribution",
+        "config",
+        "artifact_version",
+    ]
     ok, msg = _require_keys(obj, required)
     if not ok:
         return False, msg
     if not _is_non_empty_str(obj["split"]):
         return False, "split must be non-empty string"
-    for key in ("counts", "metrics", "config"):
+    for key in ("counts", "metrics", "confusion_matrix", "label_distribution", "config"):
         if not isinstance(obj[key], dict):
             return False, f"{key} must be object"
+    if "total" in obj["counts"] and not isinstance(obj["counts"]["total"], int):
+        return False, "counts.total must be int when present"
+    metrics = obj["metrics"]
+    for key in ("precision", "recall", "f1"):
+        if key not in metrics:
+            return False, f"metrics missing key: {key}"
+        if not _in_01(metrics[key]):
+            return False, f"metrics.{key} must be in [0,1]"
+    cm = obj["confusion_matrix"]
+    if "labels" not in cm or "matrix" not in cm:
+        return False, "confusion_matrix must contain labels and matrix"
+    labels = cm["labels"]
+    matrix = cm["matrix"]
+    if not isinstance(labels, list) or not labels:
+        return False, "confusion_matrix.labels must be non-empty list"
+    if not isinstance(matrix, list) or len(matrix) != len(labels):
+        return False, "confusion_matrix.matrix size mismatch"
+    for r, row in enumerate(matrix):
+        if not isinstance(row, list) or len(row) != len(labels):
+            return False, f"confusion_matrix.matrix[{r}] size mismatch"
+        for c, value in enumerate(row):
+            if not isinstance(value, int) or value < 0:
+                return False, f"confusion_matrix.matrix[{r}][{c}] must be non-negative int"
+    if not isinstance(obj["threshold_sweep"], list) or not obj["threshold_sweep"]:
+        return False, "threshold_sweep must be non-empty list"
+    for idx, row in enumerate(obj["threshold_sweep"]):
+        if not isinstance(row, dict):
+            return False, f"threshold_sweep[{idx}] must be object"
+        for key in ("match_threshold", "uncertain_threshold", "precision", "recall", "f1"):
+            if key not in row:
+                return False, f"threshold_sweep[{idx}] missing key: {key}"
+            if not _in_01(row[key]):
+                return False, f"threshold_sweep[{idx}].{key} must be in [0,1]"
+    label_dist = obj["label_distribution"]
+    for key in ("reference", "predicted"):
+        if key not in label_dist:
+            return False, f"label_distribution missing key: {key}"
+        if not isinstance(label_dist[key], dict):
+            return False, f"label_distribution.{key} must be object"
     if not _is_non_empty_str(obj["artifact_version"]):
         return False, "artifact_version must be non-empty string"
+    return True, ""
+
+
+def _validate_bin_stats(bin_stats: Any, field_name: str) -> Tuple[bool, str]:
+    if not isinstance(bin_stats, list):
+        return False, f"{field_name} must be list"
+    for idx, bin_row in enumerate(bin_stats):
+        if not isinstance(bin_row, dict):
+            return False, f"{field_name}[{idx}] must be object"
+        for key in ("bin_left", "bin_right", "count", "acc", "conf"):
+            if key not in bin_row:
+                return False, f"{field_name}[{idx}] missing key: {key}"
+        if not _is_number(bin_row["bin_left"]) or not _is_number(bin_row["bin_right"]):
+            return False, f"{field_name}[{idx}].bin_left/bin_right must be numbers"
+        if float(bin_row["bin_right"]) < float(bin_row["bin_left"]):
+            return False, f"{field_name}[{idx}] bin_right must be >= bin_left"
+        if not isinstance(bin_row["count"], int) or bin_row["count"] < 0:
+            return False, f"{field_name}[{idx}].count must be non-negative int"
+        if not _in_01(bin_row["acc"]) or not _in_01(bin_row["conf"]):
+            return False, f"{field_name}[{idx}].acc/conf must be in [0,1]"
     return True, ""
 
 
 def validate_verifier_calibration_report(obj: Any) -> Tuple[bool, str]:
     if not isinstance(obj, dict):
         return False, "report must be object"
-    required = ["split", "ece", "brier", "temperature", "bin_stats", "artifact_version"]
+    required = [
+        "split",
+        "ece",
+        "brier",
+        "temperature",
+        "temperature_scaling_enabled",
+        "bin_stats",
+        "before_after",
+        "artifact_version",
+    ]
     ok, msg = _require_keys(obj, required)
     if not ok:
         return False, msg
@@ -383,11 +460,32 @@ def validate_verifier_calibration_report(obj: Any) -> Tuple[bool, str]:
         return False, "brier must be >= 0"
     if not _is_number(obj["temperature"]) or float(obj["temperature"]) <= 0.0:
         return False, "temperature must be > 0"
-    if not isinstance(obj["bin_stats"], list):
-        return False, "bin_stats must be list"
-    for idx, bin_row in enumerate(obj["bin_stats"]):
-        if not isinstance(bin_row, dict):
-            return False, f"bin_stats[{idx}] must be object"
+    if not isinstance(obj["temperature_scaling_enabled"], bool):
+        return False, "temperature_scaling_enabled must be bool"
+    ok, msg = _validate_bin_stats(obj["bin_stats"], "bin_stats")
+    if not ok:
+        return False, msg
+    before_after = obj["before_after"]
+    if not isinstance(before_after, dict):
+        return False, "before_after must be object"
+    for stage in ("before", "after"):
+        if stage not in before_after:
+            return False, f"before_after missing key: {stage}"
+        stage_row = before_after[stage]
+        if not isinstance(stage_row, dict):
+            return False, f"before_after.{stage} must be object"
+        for key in ("ece", "brier", "temperature", "bin_stats"):
+            if key not in stage_row:
+                return False, f"before_after.{stage} missing key: {key}"
+        if not _is_number(stage_row["ece"]) or float(stage_row["ece"]) < 0.0:
+            return False, f"before_after.{stage}.ece must be >= 0"
+        if not _is_number(stage_row["brier"]) or float(stage_row["brier"]) < 0.0:
+            return False, f"before_after.{stage}.brier must be >= 0"
+        if not _is_number(stage_row["temperature"]) or float(stage_row["temperature"]) <= 0.0:
+            return False, f"before_after.{stage}.temperature must be > 0"
+        ok, msg = _validate_bin_stats(stage_row["bin_stats"], f"before_after.{stage}.bin_stats")
+        if not ok:
+            return False, msg
     if not _is_non_empty_str(obj["artifact_version"]):
         return False, "artifact_version must be non-empty string"
     return True, ""

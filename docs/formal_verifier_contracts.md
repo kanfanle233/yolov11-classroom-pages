@@ -105,8 +105,20 @@ Required fields:
 - `split` `str`
 - `counts` `object`
 - `metrics` `object`
+- `confusion_matrix` `object`
+- `threshold_sweep` `list[object]`
+- `label_distribution` `object`
 - `config` `object`
 - `artifact_version` `str`
+
+`metrics` must include:
+- `precision` `float[0,1]`
+- `recall` `float[0,1]`
+- `f1` `float[0,1]`
+
+`confusion_matrix` must include:
+- `labels` `list[str]`
+- `matrix` `list[list[int]]`
 
 ## 7) `verifier_calibration_report.json`
 Required fields:
@@ -114,7 +126,9 @@ Required fields:
 - `ece` `float >= 0`
 - `brier` `float >= 0`
 - `temperature` `float > 0`
+- `temperature_scaling_enabled` `bool`
 - `bin_stats` `list[object]`
+- `before_after` `object` with `before` and `after`
 - `artifact_version` `str`
 
 ## 8) `pipeline_manifest.json`

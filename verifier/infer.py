@@ -63,8 +63,18 @@ def _load_uq_index(path: Optional[Path]) -> Dict[int, float]:
     rows = _load_jsonl(path)
     by_track: Dict[int, List[float]] = {}
     for row in rows:
+        persons = row.get("persons")
+        if isinstance(persons, list):
+            for person in persons:
+                if not isinstance(person, dict):
+                    continue
+                tid = person.get("track_id")
+                uq = person.get("uq_track", person.get("uq_score"))
+                if isinstance(tid, int) and isinstance(uq, (int, float)):
+                    by_track.setdefault(tid, []).append(float(uq))
+            continue
         tid = row.get("track_id")
-        uq = row.get("uq_score")
+        uq = row.get("uq_score", row.get("uq_track"))
         if isinstance(tid, int) and isinstance(uq, (int, float)):
             by_track.setdefault(tid, []).append(float(uq))
     return {tid: (sum(vals) / len(vals) if vals else 0.5) for tid, vals in by_track.items()}
@@ -141,9 +151,11 @@ def _predict_one(
         "p_mismatch": p_mismatch,
         "match_label": label,
         "reliability_score": reliability,
+        "uncertainty": _clamp01(1.0 - reliability),
         "visual_score": visual_score,
         "text_score": text_score,
         "uq_score": _clamp01(uq),
+        "runtime_config": runtime_cfg.to_dict(),
     }
 
 
@@ -161,6 +173,7 @@ def infer_verified_rows(
     aligned = aligned_obj if isinstance(aligned_obj, list) else []
     uq_index = _load_uq_index(pose_uq_path)
     model, runtime_cfg = _load_model(model_path)
+    threshold_source = "model_runtime_config" if model is not None else "heuristic_default"
 
     rows: List[Dict[str, Any]] = []
     for block in aligned:
@@ -211,8 +224,11 @@ def infer_verified_rows(
                 "window": {"start": w_start, "end": w_end},
                 "match_label": "mismatch",
                 "reliability_score": 0.0,
+                "uncertainty": 1.0,
                 "p_match": 0.0,
                 "p_mismatch": 1.0,
+                "threshold_source": threshold_source,
+                "runtime_config": runtime_cfg.to_dict(),
                 "evidence": {"visual_score": 0.0, "text_score": 0.0, "uq_score": 1.0},
             }
             rows.append(row)
@@ -229,8 +245,11 @@ def infer_verified_rows(
                 "window": {"start": w_start, "end": w_end},
                 "match_label": str(score["match_label"]),
                 "reliability_score": float(score["reliability_score"]),
+                "uncertainty": float(score["uncertainty"]),
                 "p_match": float(score["p_match"]),
                 "p_mismatch": float(score["p_mismatch"]),
+                "threshold_source": threshold_source,
+                "runtime_config": score["runtime_config"],
                 "evidence": {
                     "visual_score": float(score["visual_score"]),
                     "text_score": float(score["text_score"]),

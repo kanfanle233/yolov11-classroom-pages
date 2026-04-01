@@ -13,7 +13,7 @@ try:
 except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-from contracts.schemas import ARTIFACT_VERSION, SCHEMA_VERSION
+from contracts.schemas import SCHEMA_VERSION
 
 
 def run_step(py_exe: str, script: Path, args: List[str]) -> None:
@@ -130,14 +130,6 @@ def _is_placeholder_transcript(path: Path) -> bool:
     return True
 
 
-def _load_json(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        obj = json.load(f)
-    if isinstance(obj, dict):
-        return obj
-    return {}
-
-
 def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not path.exists():
@@ -198,45 +190,6 @@ def _convert_training_samples_to_contract(raw_samples_path: Path, contract_sampl
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _convert_reports_to_contract(
-    raw_report_path: Path,
-    eval_report_path: Path,
-    calibration_report_path: Path,
-) -> None:
-    report = _load_json(raw_report_path)
-    train_metrics = report.get("train_metrics", {}) if isinstance(report.get("train_metrics"), dict) else {}
-    val_metrics = report.get("val_metrics", {}) if isinstance(report.get("val_metrics"), dict) else {}
-    runtime_cfg = report.get("runtime_config", {}) if isinstance(report.get("runtime_config"), dict) else {}
-    sample_types = report.get("sample_types", {}) if isinstance(report.get("sample_types"), dict) else {}
-
-    counts = {
-        "total": int(report.get("num_samples", 0)),
-        "train": int(report.get("num_train", 0)),
-        "val": int(report.get("num_val", 0)),
-        "sample_types": sample_types,
-    }
-    eval_report = {
-        "split": "val",
-        "counts": counts,
-        "metrics": {
-            "train": train_metrics,
-            "val": val_metrics,
-        },
-        "config": runtime_cfg,
-        "artifact_version": ARTIFACT_VERSION,
-    }
-    calibration_report = {
-        "split": "val",
-        "ece": float(val_metrics.get("ece", 0.0)),
-        "brier": float(val_metrics.get("brier", 0.0)),
-        "temperature": float(runtime_cfg.get("temperature", 1.0)),
-        "bin_stats": [],
-        "artifact_version": ARTIFACT_VERSION,
-    }
-    _write_json(eval_report_path, eval_report)
-    _write_json(calibration_report_path, calibration_report)
-
-
 def _write_pipeline_manifest(
     *,
     out_dir: Path,
@@ -286,6 +239,11 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=25.0)
     parser.add_argument("--train_verifier", type=int, default=0, help="1=train verifier model before step07")
     parser.add_argument("--verifier_model", type=str, default="", help="path to verifier checkpoint (.pt)")
+    parser.add_argument("--eval_target_field", type=str, default="auto")
+    parser.add_argument("--calibration_target_field", type=str, default="auto")
+    parser.add_argument("--calibration_prob_field", type=str, default="p_match")
+    parser.add_argument("--calibration_num_bins", type=int, default=10)
+    parser.add_argument("--disable_temperature_scaling", type=int, default=0)
 
     # Legacy compatibility args (accepted but no longer on default chain).
     parser.add_argument("--fuse_action_obj", type=int, default=0)
@@ -514,12 +472,6 @@ def main() -> None:
             ),
         )
 
-        if verifier_report_raw.exists():
-            _convert_reports_to_contract(
-                raw_report_path=verifier_report_raw,
-                eval_report_path=verifier_eval_report,
-                calibration_report_path=verifier_calibration_report,
-            )
         if verifier_samples_raw.exists():
             _convert_training_samples_to_contract(
                 raw_samples_path=verifier_samples_raw,
@@ -553,6 +505,58 @@ def main() -> None:
                 str(per_person_json),
                 "--validate",
                 "1",
+            ],
+        ),
+    )
+
+    maybe_run(
+        71,
+        "verifier evaluation report",
+        [verifier_eval_report],
+        [verified_events_jsonl],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            PROJECT_ROOT / "verifier" / "eval.py",
+            [
+                "--verified",
+                str(verified_events_jsonl),
+                "--out",
+                str(verifier_eval_report),
+                "--split",
+                "val",
+                "--target_field",
+                str(args.eval_target_field),
+            ],
+        ),
+    )
+
+    maybe_run(
+        72,
+        "verifier calibration report",
+        [verifier_calibration_report],
+        [verified_events_jsonl],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            PROJECT_ROOT / "verifier" / "calibration.py",
+            [
+                "--verified",
+                str(verified_events_jsonl),
+                "--out",
+                str(verifier_calibration_report),
+                "--split",
+                "val",
+                "--target_field",
+                str(args.calibration_target_field),
+                "--prob_field",
+                str(args.calibration_prob_field),
+                "--num_bins",
+                str(int(args.calibration_num_bins)),
+                "--disable_temperature_scaling",
+                str(int(args.disable_temperature_scaling)),
             ],
         ),
     )
@@ -620,6 +624,11 @@ def main() -> None:
                 "asr_backend": str(args.asr_backend),
                 "interaction_model": str(args.interaction_model),
                 "enable_mllm": int(args.enable_mllm),
+                "eval_target_field": str(args.eval_target_field),
+                "calibration_target_field": str(args.calibration_target_field),
+                "calibration_prob_field": str(args.calibration_prob_field),
+                "calibration_num_bins": int(args.calibration_num_bins),
+                "disable_temperature_scaling": int(args.disable_temperature_scaling),
             },
         )
 
@@ -634,6 +643,8 @@ def main() -> None:
     print(f"Pose tracks UQ         : {pose_uq}")
     print(f"Event queries          : {event_queries_jsonl}")
     print(f"Verified events        : {verified_events_jsonl}")
+    print(f"Verifier eval report   : {verifier_eval_report}")
+    print(f"Verifier calibration   : {verifier_calibration_report}")
     print(f"Verifier model         : {verifier_model if verifier_model.exists() else 'not_used'}")
     print(f"Timeline chart         : {timeline_png}")
 

@@ -298,6 +298,16 @@ def main() -> None:
         window_start = _safe_float(row.get("window_start", window_obj.get("start", 0.0)), 0.0)
         window_end = _safe_float(row.get("window_end", window_obj.get("end", window_start)), window_start)
         reliability = _safe_float(row.get("reliability_score", 0.0), 0.0)
+        uncertainty = _safe_float(row.get("uncertainty", 1.0 - reliability), 1.0 - reliability)
+        threshold_source = str(
+            row.get(
+                "threshold_source",
+                "model_runtime_config" if (model_path and model_path.exists()) else "heuristic_default",
+            )
+        )
+        runtime_cfg = row.get("runtime_config", {})
+        if not isinstance(runtime_cfg, dict):
+            runtime_cfg = {}
         label = str(row.get("label", row.get("match_label", "mismatch")))
         evidence = row.get("evidence", {})
         out_row = {
@@ -314,11 +324,12 @@ def main() -> None:
             "p_match": _safe_float(row.get("p_match", 0.0), 0.0),
             "p_mismatch": _safe_float(row.get("p_mismatch", 1.0), 1.0),
             "reliability_score": reliability,
-            "uncertainty": max(0.0, min(1.0, 1.0 - reliability)),
+            "uncertainty": max(0.0, min(1.0, uncertainty)),
             "label": label,
             "match_label": label,
-            "threshold_source": "runtime_config",
+            "threshold_source": threshold_source,
             "model_version": model_version,
+            "thresholds": runtime_cfg,
             "evidence": {
                 "visual_score": _safe_float(evidence.get("visual_score", 0.0), 0.0),
                 "text_score": _safe_float(evidence.get("text_score", 0.0), 0.0),

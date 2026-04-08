@@ -1,1 +1,3 @@
-{}
+{
+  "python.defaultInterpreterPath": "F:/miniconda/envs/pytorch_env/python.exe"
+}

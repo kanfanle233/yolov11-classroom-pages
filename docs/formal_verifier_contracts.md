@@ -41,6 +41,11 @@ Required per `persons[]`:
 - `uq_kpt` `float[0,1]`
 - `log_sigma2` `float` (optional, reserved)
 
+Current iteration note:
+- The shipped `03c_estimate_track_uncertainty.py` implementation is `heuristic_statistical`, not a learned variance head.
+- `log_sigma2` is currently a reserved proxy field derived from heuristic UQ and must not be described as RTMO/ProbPose-style probabilistic pose output.
+- Presence probability / out-of-window probability / visibility branches are not part of the current contract.
+
 ## 3) `align_multimodal.json`
 Top-level JSON list, each item is an aligned query block.
 
@@ -130,6 +135,10 @@ Required fields:
 - `bin_stats` `list[object]`
 - `before_after` `object` with `before` and `after`
 - `artifact_version` `str`
+
+Supporting artifact:
+- `verifier_reliability_diagram.svg`: optional visualization exported from the same calibration run.
+
 
 ## 8) `pipeline_manifest.json`
 Required fields:

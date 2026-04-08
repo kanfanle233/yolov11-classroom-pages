@@ -14,6 +14,7 @@ except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from contracts.schemas import SCHEMA_VERSION
+from verifier.dataset import build_training_samples, convert_to_contract_samples, save_training_samples
 
 
 def run_step(py_exe: str, script: Path, args: List[str]) -> None:
@@ -154,42 +155,6 @@ def _write_json(path: Path, obj: Dict[str, Any]) -> None:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
-def _convert_training_samples_to_contract(raw_samples_path: Path, contract_samples_path: Path) -> None:
-    rows = _iter_jsonl(raw_samples_path)
-    converted: List[Dict[str, Any]] = []
-    for row in rows:
-        event_id = str(row.get("event_id", row.get("query_id", "")))
-        target = int(row.get("target", 0))
-        sample_type = str(row.get("sample_type", "semantic_mismatch"))
-        converted.append(
-            {
-                "sample_id": str(row.get("sample_id", "")),
-                "event_id": event_id,
-                "sample_type": sample_type,
-                "query_text": str(row.get("query_text", "")),
-                "event_type": str(row.get("event_type", "unknown")),
-                "track_id": int(row.get("track_id", -1)),
-                "clip_start": float(row.get("clip_start", row.get("window_start", 0.0))),
-                "clip_end": float(row.get("clip_end", row.get("window_end", 0.0))),
-                "target_label": "match" if target == 1 else "mismatch",
-                "negative_kind": "" if sample_type == "positive" else sample_type,
-                "provenance": {
-                    "source": "verifier.dataset",
-                    "legacy_fields": {
-                        "overlap": float(row.get("overlap", 0.0)),
-                        "action_confidence": float(row.get("action_confidence", 0.0)),
-                        "uq_score": float(row.get("uq_score", 0.0)),
-                        "text_score": float(row.get("text_score", 0.0)),
-                    },
-                },
-            }
-        )
-    contract_samples_path.parent.mkdir(parents=True, exist_ok=True)
-    with contract_samples_path.open("w", encoding="utf-8") as f:
-        for row in converted:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
 def _write_pipeline_manifest(
     *,
     out_dir: Path,
@@ -281,6 +246,7 @@ def main() -> None:
     verifier_samples_train = out_dir / "verifier_samples_train.jsonl"
     verifier_eval_report = out_dir / "verifier_eval_report.json"
     verifier_calibration_report = out_dir / "verifier_calibration_report.json"
+    verifier_reliability_diagram = out_dir / "verifier_reliability_diagram.svg"
     per_person_json = out_dir / "per_person_sequences.json"
     timeline_png = out_dir / "timeline_chart.png"
     timeline_json = out_dir / "timeline_chart.json"
@@ -444,6 +410,15 @@ def main() -> None:
         ),
     )
 
+    contract_samples = convert_to_contract_samples(
+        build_training_samples(
+            event_queries_path=event_queries_jsonl,
+            aligned_path=aligned_json,
+            actions_path=actions_jsonl,
+        )
+    )
+    save_training_samples(verifier_samples_train, contract_samples)
+
     if int(args.train_verifier) == 1:
         maybe_run(
             67,
@@ -473,10 +448,7 @@ def main() -> None:
         )
 
         if verifier_samples_raw.exists():
-            _convert_training_samples_to_contract(
-                raw_samples_path=verifier_samples_raw,
-                contract_samples_path=verifier_samples_train,
-            )
+            save_training_samples(verifier_samples_train, convert_to_contract_samples(_iter_jsonl(verifier_samples_raw)))
 
     maybe_run(
         70,
@@ -557,6 +529,8 @@ def main() -> None:
                 str(int(args.calibration_num_bins)),
                 "--disable_temperature_scaling",
                 str(int(args.disable_temperature_scaling)),
+                "--diagram_out",
+                str(verifier_reliability_diagram),
             ],
         ),
     )
@@ -613,6 +587,7 @@ def main() -> None:
                 "verifier_model": verifier_model,
                 "verifier_eval_report": verifier_eval_report,
                 "verifier_calibration_report": verifier_calibration_report,
+                "verifier_reliability_diagram": verifier_reliability_diagram,
                 "per_person_sequences": per_person_json,
                 "timeline_chart_png": timeline_png,
                 "timeline_chart_json": timeline_json,
@@ -645,6 +620,7 @@ def main() -> None:
     print(f"Verified events        : {verified_events_jsonl}")
     print(f"Verifier eval report   : {verifier_eval_report}")
     print(f"Verifier calibration   : {verifier_calibration_report}")
+    print(f"Reliability diagram    : {verifier_reliability_diagram}")
     print(f"Verifier model         : {verifier_model if verifier_model.exists() else 'not_used'}")
     print(f"Timeline chart         : {timeline_png}")
 

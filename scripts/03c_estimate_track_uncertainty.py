@@ -181,6 +181,10 @@ def main() -> None:
             uq_frame = sum(float(p["uq_track"]) for p in person_out) / len(person_out)
             out_row = {
                 "schema_version": SCHEMA_VERSION,
+                "uq_type": "heuristic_statistical",
+                "uq_scope": "track_sequence",
+                "presence_aware": False,
+                "variance_head": False,
                 "frame": frame_idx,
                 "t": round(t_sec, 6),
                 "uq_frame": round(uq_frame, 6),

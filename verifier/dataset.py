@@ -196,6 +196,38 @@ def build_training_samples(
     return samples
 
 
+def convert_to_contract_samples(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    converted: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        event_id = str(row.get("event_id", row.get("query_id", "")))
+        target = int(row.get("target", 0))
+        sample_type = str(row.get("sample_type", "semantic_mismatch"))
+        converted.append(
+            {
+                "sample_id": str(row.get("sample_id", f"s_{index:07d}")),
+                "event_id": event_id,
+                "sample_type": sample_type,
+                "query_text": str(row.get("query_text", "")),
+                "event_type": str(row.get("event_type", "unknown")),
+                "track_id": int(row.get("track_id", -1)),
+                "clip_start": float(row.get("clip_start", row.get("window_start", 0.0))),
+                "clip_end": float(row.get("clip_end", row.get("window_end", row.get("clip_start", 0.0)))),
+                "target_label": "match" if target == 1 else "mismatch",
+                "negative_kind": "" if sample_type == "positive" else sample_type,
+                "provenance": {
+                    "source": "verifier.dataset",
+                    "legacy_fields": {
+                        "overlap": float(row.get("overlap", 0.0)),
+                        "action_confidence": float(row.get("action_confidence", 0.0)),
+                        "uq_score": float(row.get("uq_score", 0.0)),
+                        "text_score": float(row.get("text_score", 0.0)),
+                    },
+                },
+            }
+        )
+    return converted
+
+
 def save_training_samples(path: Path, rows: List[Dict[str, Any]]) -> None:
     write_jsonl(path, rows)
 

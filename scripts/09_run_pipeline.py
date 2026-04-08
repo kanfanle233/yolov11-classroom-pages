@@ -1,23 +1,22 @@
-# scripts/09_run_pipeline.py
 import argparse
 import json
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
-from typing import List
-
-import cv2
+from typing import Any, Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 try:
     from paths import PROJECT_ROOT
-except ImportError:
+except Exception:
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+from contracts.schemas import SCHEMA_VERSION
 
-def run_step(py_exe: str, script: Path, args: List[str]):
+
+def run_step(py_exe: str, script: Path, args: List[str]) -> None:
     cmd = [py_exe, str(script)] + args
     print("\n" + "=" * 80)
     print(f"[RUN] {script.name} {' '.join(args)}")
@@ -27,7 +26,7 @@ def run_step(py_exe: str, script: Path, args: List[str]):
         raise RuntimeError(f"Step failed: {script.name} (exit={r.returncode})")
 
 
-def file_is_fresh(output_path: Path, inputs: List[Path], min_bytes: int = 100) -> bool:
+def file_is_fresh(output_path: Path, inputs: List[Path], min_bytes: int = 10) -> bool:
     if not output_path.exists() or not output_path.is_file():
         return False
     try:
@@ -42,35 +41,38 @@ def file_is_fresh(output_path: Path, inputs: List[Path], min_bytes: int = 100) -
         return False
 
 
-def maybe_run(step_id, step_name, outputs, inputs, force, from_step, run_fn, min_bytes=100):
+def maybe_run(step_id, step_name, outputs, inputs, force, from_step, run_fn, min_bytes=10):
     if step_id < from_step:
-        print(f"[SKIP] step{step_id:02d} {step_name}")
+        print(f"[SKIP] step{step_id:03d} {step_name}")
         return
     if force:
-        print(f"[FORCE] step{step_id:02d} {step_name}")
+        print(f"[FORCE] step{step_id:03d} {step_name}")
         run_fn()
         return
 
-    all_fresh = True
-    for o in outputs:
-        if not file_is_fresh(o, inputs, min_bytes):
-            all_fresh = False
-            break
-
+    all_fresh = all(file_is_fresh(o, inputs, min_bytes=min_bytes) for o in outputs)
     if all_fresh:
-        print(f"[CACHE] step{step_id:02d} {step_name} -> Outputs fresh.")
+        print(f"[CACHE] step{step_id:03d} {step_name}")
     else:
-        print(f"[DO] step{step_id:02d} {step_name}")
+        print(f"[DO] step{step_id:03d} {step_name}")
         run_fn()
 
 
 def resolve_model_or_fail(model_arg: str) -> str:
     p = Path(model_arg)
-    if not p.is_absolute():
-        p = (PROJECT_ROOT / p).resolve()
-    if not p.exists():
-        raise FileNotFoundError(f"Model not found: {p}")
-    return str(p)
+    if p.is_absolute() or len(p.parts) > 1:
+        q = p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
+        if not q.exists():
+            raise FileNotFoundError(f"Model not found: {q}")
+        return str(q)
+
+    local = (PROJECT_ROOT / model_arg).resolve()
+    if local.exists():
+        return str(local)
+    cwd_local = (Path.cwd() / model_arg).resolve()
+    if cwd_local.exists():
+        return str(cwd_local)
+    return model_arg
 
 
 def resolve_video_path(video_arg: str) -> Path:
@@ -83,33 +85,12 @@ def resolve_video_path(video_arg: str) -> Path:
     return (PROJECT_ROOT / candidate).resolve()
 
 
-def _write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-def _get_video_info(video_path: Path, fps_fallback: float = 25.0):
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        return fps_fallback, 0, 0, 0
-    fps = cap.get(cv2.CAP_PROP_FPS) or fps_fallback
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    cap.release()
-    return float(fps), int(n), int(w), int(h)
-
-
 def _resolve_out_dir(args, video_path: Path, base_dir: Path) -> Path:
     if args.out_dir:
         return resolve_video_path(args.out_dir)
     if args.output_root:
         root = resolve_video_path(args.output_root)
-        if args.view:
-            view_dir = root / args.view
-        else:
-            view_dir = root
+        view_dir = root / args.view if args.view else root
         case_id = args.case_id or video_path.stem
         if args.video_id:
             vid = args.video_id
@@ -120,305 +101,552 @@ def _resolve_out_dir(args, video_path: Path, base_dir: Path) -> Path:
     return (base_dir / "output" / (args.name or video_path.stem)).resolve()
 
 
-def _export_compat_bundle(
+def _auto_pose_model_path(user_arg: str) -> str:
+    if user_arg and user_arg.lower() != "auto":
+        return resolve_model_or_fail(user_arg)
+    enhanced = (PROJECT_ROOT / "models" / "classroom_yolo_enhanced.pt").resolve()
+    if enhanced.exists():
+        print(f"[INFO] using enhanced classroom pose model: {enhanced}")
+        return str(enhanced)
+    return resolve_model_or_fail("yolo11n-pose.pt")
+
+
+def _is_placeholder_transcript(path: Path) -> bool:
+    if not path.exists():
+        return True
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                text = str(obj.get("text", ""))
+                if "[ASR_EMPTY:" in text:
+                    return True
+                return False
+    except Exception:
+        return True
+    return True
+
+
+def _iter_jsonl(path: Path) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not path.exists():
+        return out
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict):
+                out.append(row)
+    return out
+
+
+def _write_json(path: Path, obj: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
+def _convert_training_samples_to_contract(raw_samples_path: Path, contract_samples_path: Path) -> None:
+    rows = _iter_jsonl(raw_samples_path)
+    converted: List[Dict[str, Any]] = []
+    for row in rows:
+        event_id = str(row.get("event_id", row.get("query_id", "")))
+        target = int(row.get("target", 0))
+        sample_type = str(row.get("sample_type", "semantic_mismatch"))
+        converted.append(
+            {
+                "sample_id": str(row.get("sample_id", "")),
+                "event_id": event_id,
+                "sample_type": sample_type,
+                "query_text": str(row.get("query_text", "")),
+                "event_type": str(row.get("event_type", "unknown")),
+                "track_id": int(row.get("track_id", -1)),
+                "clip_start": float(row.get("clip_start", row.get("window_start", 0.0))),
+                "clip_end": float(row.get("clip_end", row.get("window_end", 0.0))),
+                "target_label": "match" if target == 1 else "mismatch",
+                "negative_kind": "" if sample_type == "positive" else sample_type,
+                "provenance": {
+                    "source": "verifier.dataset",
+                    "legacy_fields": {
+                        "overlap": float(row.get("overlap", 0.0)),
+                        "action_confidence": float(row.get("action_confidence", 0.0)),
+                        "uq_score": float(row.get("uq_score", 0.0)),
+                        "text_score": float(row.get("text_score", 0.0)),
+                    },
+                },
+            }
+        )
+    contract_samples_path.parent.mkdir(parents=True, exist_ok=True)
+    with contract_samples_path.open("w", encoding="utf-8") as f:
+        for row in converted:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _write_pipeline_manifest(
     *,
     out_dir: Path,
-    video_path: Path,
     case_id: str,
     video_id: str,
-    view_name: str,
-    pose_tracks: Path,
-    actions_jsonl: Path,
-    overlay_video: Path,
-    timeline_png: Path,
-    fps_hint: float,
+    artifacts: Dict[str, Path],
+    config_snapshot: Dict[str, Any],
 ) -> None:
-    fps, n_frames, w, h = _get_video_info(video_path, fps_fallback=fps_hint)
-    legacy_jsonl = out_dir / f"{case_id}.jsonl"
-    legacy_meta = out_dir / f"{case_id}.meta.json"
-    legacy_summary = out_dir / f"{case_id}_summary.json"
-
-    if pose_tracks.exists():
-        shutil.copy2(pose_tracks, legacy_jsonl)
-        _write_json(
-            legacy_meta,
-            {
-                "video_id": video_id,
-                "case_id": case_id,
-                "view": view_name,
-                "video_path": str(video_path),
-                "fps": fps,
-                "frames": n_frames,
-                "width": w,
-                "height": h,
-                "source_tracks": str(pose_tracks),
-                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            },
-        )
-
-    if actions_jsonl.exists():
-        beh_jsonl = out_dir / f"{case_id}_behavior.jsonl"
-        beh_meta = out_dir / f"{case_id}_behavior.meta.json"
-        shutil.copy2(actions_jsonl, beh_jsonl)
-        _write_json(
-            beh_meta,
-            {
-                "video_id": video_id,
-                "case_id": case_id,
-                "view": view_name,
-                "video_path": str(video_path),
-                "fps": fps,
-                "frames": n_frames,
-                "labels": [],
-                "source_actions": str(actions_jsonl),
-                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            },
-        )
-
-    if overlay_video.exists():
-        compat_overlay = out_dir / f"{case_id}_overlay.mp4"
-        if compat_overlay != overlay_video:
-            shutil.copy2(overlay_video, compat_overlay)
-
-    timeline_json = timeline_png.with_suffix(".json")
-    if timeline_json.exists():
-        timeline_alias = out_dir / "timeline_viz.json"
-        if timeline_alias != timeline_json:
-            shutil.copy2(timeline_json, timeline_alias)
-
-    if not legacy_summary.exists():
-        _write_json(legacy_summary, {"info": "See downstream summary outputs for details."})
+    payload = {
+        "case_id": case_id,
+        "video_id": video_id,
+        "schema_version": SCHEMA_VERSION,
+        "artifacts": {k: str(v) for k, v in artifacts.items() if v.exists()},
+        "config_snapshot": config_snapshot,
+    }
+    _write_json(out_dir / "pipeline_manifest.json", payload)
 
 
-def main():
+def main() -> None:
     base_dir = PROJECT_ROOT
     scripts_dir = Path(__file__).resolve().parent
 
-    parser = argparse.ArgumentParser(description="Deep Learning Classroom Behavior Pipeline")
+    parser = argparse.ArgumentParser(
+        description="Formal pipeline (fixed schema): pose -> uq -> actions -> asr -> event queries -> align -> verifier"
+    )
     parser.add_argument("--video", type=str, default="data/videos/demo3.mp4")
     parser.add_argument("--name", type=str, default="")
     parser.add_argument("--out_dir", type=str, default="")
-    parser.add_argument("--output_root", type=str, default="", help="root folder for demo outputs (e.g. output/.../_demo_web)")
-    parser.add_argument("--view", type=str, default="", help="view name for subfolder")
-    parser.add_argument("--view_code", type=str, default="", help="view code for folder naming (e.g. rear/teacher)")
-    parser.add_argument("--case_id", type=str, default="", help="case id for output naming (e.g. 0001)")
-    parser.add_argument("--video_id", type=str, default="", help="explicit video_id folder name")
-    parser.add_argument("--export_compat", type=int, default=1, help="1=export 01_run_single_video-style bundle")
+    parser.add_argument("--output_root", type=str, default="")
+    parser.add_argument("--view", type=str, default="")
+    parser.add_argument("--view_code", type=str, default="")
+    parser.add_argument("--case_id", type=str, default="")
+    parser.add_argument("--video_id", type=str, default="")
     parser.add_argument("--py", type=str, default=sys.executable)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--from_step", type=int, default=1)
     parser.add_argument("--skip_vis", action="store_true")
-    parser.add_argument("--skip_video", action="store_true")
+    parser.add_argument("--export_compat", type=int, default=1)
 
-    # Model Weights
-    parser.add_argument("--pose_model", type=str, default="yolo11s-pose.pt")
-    parser.add_argument("--det_model", type=str, default="yolo11s.pt")
-    parser.add_argument("--action_model", type=str, default="", help="Optional: SlowFast weights")
-    parser.add_argument("--fuse_action_obj", type=int, default=1, help="1=run action/object fusion after step05")
-    parser.add_argument("--fuse_window", type=float, default=0.8, help="fusion time window in seconds")
-    parser.add_argument("--fuse_alpha", type=float, default=0.75, help="SlowFast weight in fusion")
-    parser.add_argument("--fuse_beta", type=float, default=0.25, help="Object evidence weight in fusion")
-    parser.add_argument("--stgcn_weight", type=str, default="", help="Optional: ST-GCN weights")
-
-    # Parameters
+    parser.add_argument("--pose_model", type=str, default="auto")
+    parser.add_argument("--det_model", type=str, default="yolo11n.pt")
+    parser.add_argument("--action_model", type=str, default="")
+    parser.add_argument("--action_mode", choices=["auto", "slowfast", "rules"], default="auto")
+    parser.add_argument("--asr_backend", choices=["auto", "api", "whisper"], default="auto")
+    parser.add_argument("--asr_model", type=str, default="paraformer-realtime-v1")
+    parser.add_argument("--asr_lang", type=str, default="zh")
     parser.add_argument("--fps", type=float, default=25.0)
-    parser.add_argument("--viz_gap_tol", type=float, default=1.5, help="Visualization merge gap (s)")
-    parser.add_argument("--viz_min_dur", type=float, default=0.1, help="Visualization min duration (s)")
+    parser.add_argument("--train_verifier", type=int, default=0, help="1=train verifier model before step07")
+    parser.add_argument("--verifier_model", type=str, default="", help="path to verifier checkpoint (.pt)")
+    parser.add_argument("--eval_target_field", type=str, default="auto")
+    parser.add_argument("--calibration_target_field", type=str, default="auto")
+    parser.add_argument("--calibration_prob_field", type=str, default="p_match")
+    parser.add_argument("--calibration_num_bins", type=int, default=10)
+    parser.add_argument("--disable_temperature_scaling", type=int, default=0)
 
+    # Legacy compatibility args (accepted but no longer on default chain).
+    parser.add_argument("--fuse_action_obj", type=int, default=0)
+    parser.add_argument("--fuse_window", type=float, default=0.8)
+    parser.add_argument("--fuse_alpha", type=float, default=0.75)
+    parser.add_argument("--fuse_beta", type=float, default=0.25)
+    parser.add_argument("--enable_peer_aware", type=int, default=0)
+    parser.add_argument("--peer_radius", type=float, default=0.15)
+    parser.add_argument("--interaction_model", choices=["igformer", "legacy"], default="igformer")
+    parser.add_argument("--enable_mllm", type=int, default=0)
+    parser.add_argument("--interpolate_occluded", type=int, default=0)
+    parser.add_argument("--occlusion_conf_thres", type=float, default=0.2)
+    parser.add_argument("--viz_gap_tol", type=float, default=1.5)
+    parser.add_argument("--viz_min_dur", type=float, default=0.1)
     args = parser.parse_args()
 
     video_path = resolve_video_path(args.video)
     if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
-
+        raise FileNotFoundError(f"video not found: {video_path}")
     name = args.name if args.name else (args.case_id or video_path.stem)
     out_dir = _resolve_out_dir(args, video_path, base_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # === Output Paths ===
     pose_keypoints = out_dir / "pose_keypoints_v2.jsonl"
-    objects_jsonl = out_dir / "objects.jsonl"
     pose_tracks = out_dir / "pose_tracks_smooth.jsonl"
-
-    # [新增路径] Pose Demo Video
-    pose_demo_video = out_dir / "pose_demo_out.mp4"
-
+    pose_uq = out_dir / "pose_tracks_smooth_uq.jsonl"
     actions_jsonl = out_dir / "actions.jsonl"
-    actions_fused_jsonl = out_dir / "actions_fused.jsonl"
-    embeddings_pkl = out_dir / "embeddings.pkl"
-
     transcript_jsonl = out_dir / "transcript.jsonl"
+    event_queries_jsonl = out_dir / "event_queries.jsonl"
+    aligned_json = out_dir / "align_multimodal.json"
+    verified_events_jsonl = out_dir / "verified_events.jsonl"
+    verifier_model = Path(args.verifier_model).resolve() if args.verifier_model else (out_dir / "verifier.pt")
+    verifier_report_raw = out_dir / "verifier_report.raw.json"
+    verifier_samples_raw = out_dir / "verifier_samples.raw.jsonl"
+    verifier_samples_train = out_dir / "verifier_samples_train.jsonl"
+    verifier_eval_report = out_dir / "verifier_eval_report.json"
+    verifier_calibration_report = out_dir / "verifier_calibration_report.json"
     per_person_json = out_dir / "per_person_sequences.json"
-    overlay_video = out_dir / f"{name}_overlay.mp4"
-    objects_demo_video = out_dir / "objects_demo_out.mp4"
     timeline_png = out_dir / "timeline_chart.png"
-    group_events_jsonl = out_dir / "group_events.jsonl"
-
-    student_features_json = out_dir / "student_features.json"
-    student_projection_json = out_dir / "student_projection.json"
+    timeline_json = out_dir / "timeline_chart.json"
 
     py = args.py
-    pose_model_abs = resolve_model_or_fail(args.pose_model)
-    det_model_abs = resolve_model_or_fail(args.det_model)
-    fps_str = str(args.fps)
+    pose_model_abs = _auto_pose_model_path(args.pose_model)
+    _ = resolve_model_or_fail(args.det_model)
 
-    # --- Pipeline Execution ---
+    maybe_run(
+        2,
+        "pose keypoints",
+        [pose_keypoints],
+        [video_path],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "02_export_keypoints_jsonl.py",
+            [
+                "--video",
+                str(video_path),
+                "--out",
+                str(pose_keypoints),
+                "--model",
+                pose_model_abs,
+                "--interpolate_occluded",
+                str(int(args.interpolate_occluded)),
+                "--occlusion_conf_thres",
+                str(float(args.occlusion_conf_thres)),
+            ],
+        ),
+    )
 
-    # Step 02: Pose Keypoints (Data Extraction)
-    maybe_run(2, "Pose Keypoints", [pose_keypoints], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "02_export_keypoints_jsonl.py",
-                               ["--video", str(video_path), "--out", str(pose_keypoints), "--model", pose_model_abs]))
+    maybe_run(
+        4,
+        "track and smooth",
+        [pose_tracks],
+        [pose_keypoints],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "03_track_and_smooth.py",
+            ["--in", str(pose_keypoints), "--video", str(video_path), "--out", str(pose_tracks)],
+        ),
+    )
 
-    # [新增步骤] Step 21: Pose Video Demo (Visualization)
-    # 这一步调用 01_pose_video_demo.py 生成纯骨骼的演示视频
-    maybe_run(21, "Pose Demo Video", [pose_demo_video], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "01_pose_video_demo.py",
-                               ["--video", str(video_path),
-                                "--out", str(pose_demo_video),
-                                "--model", pose_model_abs]))
+    maybe_run(
+        35,
+        "estimate uncertainty",
+        [pose_uq],
+        [pose_tracks],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "03c_estimate_track_uncertainty.py",
+            ["--in", str(pose_tracks), "--out", str(pose_uq), "--validate", "1"],
+        ),
+    )
 
-    # Step 03: Objects Detection
-    maybe_run(3, "Objects Detection", [objects_jsonl], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "02b_export_objects_jsonl.py",
-                               ["--video", str(video_path), "--out", str(objects_jsonl), "--model", det_model_abs]))
-
-    # Step 04: Tracking
-    maybe_run(4, "Tracking", [pose_tracks], [pose_keypoints], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "03_track_and_smooth.py",
-                               ["--in", str(pose_keypoints), "--video", str(video_path), "--out", str(pose_tracks)]))
-
-    # Step 05: Action Recognition (SlowFast)
-    def _run05():
-        cmd_args = [
-            "--video", str(video_path),
-            "--pose", str(pose_tracks),
-            "--out", str(actions_jsonl),
-            "--emb_out", str(embeddings_pkl)
+    def _run_actions():
+        cmd = [
+            "--video",
+            str(video_path),
+            "--pose",
+            str(pose_tracks),
+            "--out",
+            str(actions_jsonl),
+            "--model_mode",
+            str(args.action_mode),
         ]
         if args.action_model:
-            cmd_args += ["--model_weight", resolve_model_or_fail(args.action_model)]
-        run_step(py, scripts_dir / "05_slowfast_actions.py", cmd_args)
+            cmd += ["--model_weight", resolve_model_or_fail(args.action_model)]
+        run_step(py, scripts_dir / "05_slowfast_actions.py", cmd)
 
-    maybe_run(5, "SlowFast Behavior Recognition", [actions_jsonl, embeddings_pkl], [video_path, pose_tracks],
-              args.force,
-              args.from_step, _run05)
+    maybe_run(
+        5,
+        "action recognition",
+        [actions_jsonl],
+        [video_path, pose_tracks],
+        args.force,
+        args.from_step,
+        _run_actions,
+    )
 
-    # Step 05.5: Action/Object Fusion
-    if int(args.fuse_action_obj) == 1:
-        maybe_run(55, "Action/Object Fusion", [actions_fused_jsonl], [actions_jsonl, objects_jsonl],
-                  args.force, args.from_step,
-                  lambda: run_step(py, scripts_dir / "05b_fuse_actions_with_objects.py",
-                                   ["--actions", str(actions_jsonl),
-                                    "--objects", str(objects_jsonl),
-                                    "--out", str(actions_fused_jsonl),
-                                    "--window", str(args.fuse_window),
-                                    "--alpha", str(args.fuse_alpha),
-                                    "--beta", str(args.fuse_beta)]))
+    def _run_asr():
+        if args.asr_backend == "api":
+            run_step(
+                py,
+                scripts_dir / "06_api_asr_realtime.py",
+                ["--video", str(video_path), "--out_dir", str(out_dir), "--asr_model", str(args.asr_model)],
+            )
+            return
+        if args.asr_backend == "whisper":
+            run_step(
+                py,
+                scripts_dir / "06_asr_whisper_to_jsonl.py",
+                ["--video", str(video_path), "--out_dir", str(out_dir), "--lang", str(args.asr_lang)],
+            )
+            return
 
-    actions_for_downstream = actions_fused_jsonl if actions_fused_jsonl.exists() else actions_jsonl
+        # auto: try api first, fallback whisper when still placeholder.
+        run_step(
+            py,
+            scripts_dir / "06_api_asr_realtime.py",
+            ["--video", str(video_path), "--out_dir", str(out_dir), "--asr_model", str(args.asr_model)],
+        )
+        if _is_placeholder_transcript(transcript_jsonl):
+            print("[INFO] ASR placeholder detected, fallback to whisper...")
+            run_step(
+                py,
+                scripts_dir / "06_asr_whisper_to_jsonl.py",
+                ["--video", str(video_path), "--out_dir", str(out_dir), "--lang", str(args.asr_lang)],
+            )
 
-    # Step 06: ASR
-    maybe_run(6, "ASR", [transcript_jsonl], [video_path], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "06_api_asr_realtime.py",
-                               ["--video", str(video_path), "--out_dir", str(out_dir)]))
+    maybe_run(
+        6,
+        "asr transcript",
+        [transcript_jsonl],
+        [video_path],
+        args.force,
+        args.from_step,
+        _run_asr,
+    )
 
-    # Step 07: Merge Data
-    maybe_run(7, "Merge Data", [per_person_json], [actions_for_downstream, transcript_jsonl], args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "07_dual_verification.py",
-                               ["--actions", str(actions_for_downstream), "--transcript", str(transcript_jsonl), "--out",
-                                str(per_person_json), "--fps", fps_str]))
+    maybe_run(
+        65,
+        "extract event queries",
+        [event_queries_jsonl],
+        [transcript_jsonl],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "06b_event_query_extraction.py",
+            ["--transcript", str(transcript_jsonl), "--out", str(event_queries_jsonl), "--validate", "1"],
+        ),
+    )
 
-    # Step 08: Overlay Video
-    if not args.skip_video:
-        maybe_run(8, "Overlay Video", [overlay_video], [video_path, actions_for_downstream, transcript_jsonl], args.force,
-                  args.from_step,
-                  lambda: run_step(py, scripts_dir / "08_overlay_sequences.py",
-                                   ["--video", str(video_path), "--actions", str(actions_for_downstream), "--transcript",
-                                    str(transcript_jsonl), "--out_dir", str(out_dir), "--name", name, "--mux_audio",
-                                    "1", "--out_video", str(overlay_video)]))
+    maybe_run(
+        66,
+        "adaptive multimodal align",
+        [aligned_json],
+        [event_queries_jsonl, actions_jsonl, pose_uq],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "xx_align_multimodal.py",
+            [
+                "--event_queries",
+                str(event_queries_jsonl),
+                "--actions",
+                str(actions_jsonl),
+                "--pose_uq",
+                str(pose_uq),
+                "--out",
+                str(aligned_json),
+            ],
+        ),
+    )
 
-    # Step 09: Objects Demo Video
-    maybe_run(9, "Objects Demo Video", [objects_demo_video], [video_path, objects_jsonl],
-              args.force, args.from_step,
-              lambda: run_step(py, scripts_dir / "03b_objects_video_demo.py",
-                               ["--video", str(video_path),
-                                "--objects", str(objects_jsonl),
-                                "--out", str(objects_demo_video),
-                                "--mux_audio", "1",
-                                "--conf", "0.2",
-                                "--show_empty", "1"]))
+    if int(args.train_verifier) == 1:
+        maybe_run(
+            67,
+            "train verifier",
+            [verifier_model, verifier_report_raw],
+            [event_queries_jsonl, aligned_json, actions_jsonl],
+            args.force,
+            args.from_step,
+            lambda: run_step(
+                py,
+                PROJECT_ROOT / "verifier" / "train.py",
+                [
+                    "--event_queries",
+                    str(event_queries_jsonl),
+                    "--aligned",
+                    str(aligned_json),
+                    "--actions",
+                    str(actions_jsonl),
+                    "--out_model",
+                    str(verifier_model),
+                    "--out_report",
+                    str(verifier_report_raw),
+                    "--out_samples",
+                    str(verifier_samples_raw),
+                ],
+            ),
+        )
 
-    # Step 11: Group Interaction Analysis (ST-GCN)
-    def _run11():
-        cmd_args = [
-            "--pose", str(pose_tracks),
-            "--out", str(group_events_jsonl)
-        ]
-        if args.stgcn_weight:
-            cmd_args += ["--model_weight", resolve_model_or_fail(args.stgcn_weight)]
-        run_step(py, scripts_dir / "11_group_stgcn.py", cmd_args)
+        if verifier_samples_raw.exists():
+            _convert_training_samples_to_contract(
+                raw_samples_path=verifier_samples_raw,
+                contract_samples_path=verifier_samples_train,
+            )
 
-    maybe_run(11, "Group Interactions (ST-GCN)", [group_events_jsonl], [pose_tracks],
-              args.force, args.from_step, _run11)
+    maybe_run(
+        70,
+        "dual verification",
+        [verified_events_jsonl],
+        [event_queries_jsonl, aligned_json, pose_uq, actions_jsonl, verifier_model],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            scripts_dir / "07_dual_verification.py",
+            [
+                "--actions",
+                str(actions_jsonl),
+                "--event_queries",
+                str(event_queries_jsonl),
+                "--pose_uq",
+                str(pose_uq),
+                "--aligned",
+                str(aligned_json),
+                "--out",
+                str(verified_events_jsonl),
+                "--verifier_model",
+                str(verifier_model if verifier_model.exists() else ""),
+                "--per_person_out",
+                str(per_person_json),
+                "--validate",
+                "1",
+            ],
+        ),
+    )
 
-    # Step 12: Feature Extraction
-    def _run12():
-        run_step(py, scripts_dir / "12_export_features.py",
-                 ["--src", str(per_person_json), "--out", str(student_features_json)])
+    maybe_run(
+        71,
+        "verifier evaluation report",
+        [verifier_eval_report],
+        [verified_events_jsonl],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            PROJECT_ROOT / "verifier" / "eval.py",
+            [
+                "--verified",
+                str(verified_events_jsonl),
+                "--out",
+                str(verifier_eval_report),
+                "--split",
+                "val",
+                "--target_field",
+                str(args.eval_target_field),
+            ],
+        ),
+    )
 
-    maybe_run(12, "Feature Extraction", [student_features_json], [per_person_json],
-              args.force, args.from_step, _run12)
+    maybe_run(
+        72,
+        "verifier calibration report",
+        [verifier_calibration_report],
+        [verified_events_jsonl],
+        args.force,
+        args.from_step,
+        lambda: run_step(
+            py,
+            PROJECT_ROOT / "verifier" / "calibration.py",
+            [
+                "--verified",
+                str(verified_events_jsonl),
+                "--out",
+                str(verifier_calibration_report),
+                "--split",
+                "val",
+                "--target_field",
+                str(args.calibration_target_field),
+                "--prob_field",
+                str(args.calibration_prob_field),
+                "--num_bins",
+                str(int(args.calibration_num_bins)),
+                "--disable_temperature_scaling",
+                str(int(args.disable_temperature_scaling)),
+            ],
+        ),
+    )
 
-    # Step 13: Semantic Projection
-    def _run13():
-        cmd_args = [
-            "--emb", str(embeddings_pkl),
-            "--meta", str(student_features_json),
-            "--out", str(student_projection_json),
-            "--n_clusters", "3"
-        ]
-        run_step(py, scripts_dir / "13_semantic_projection.py", cmd_args)
-
-    maybe_run(13, "Semantic Projection (UMAP)", [student_projection_json],
-              [embeddings_pkl, student_features_json], args.force, args.from_step, _run13)
-
-    # Step 10: Generate Timeline Chart
     if not args.skip_vis:
-        maybe_run(10, "Generate Timeline Chart", [timeline_png], [per_person_json, group_events_jsonl],
-                  args.force, args.from_step,
-                  lambda: run_step(py, scripts_dir / "10_visualize_timeline.py",
-                                   ["--src", str(per_person_json),
-                                    "--out", str(timeline_png),
-                                    "--group_src", str(group_events_jsonl),
-                                    "--gap_tol", str(args.viz_gap_tol),
-                                    "--min_dur", str(args.viz_min_dur),
-                                    "--fps", fps_str]))
+        maybe_run(
+            10,
+            "timeline visualization",
+            [timeline_png, timeline_json],
+            [verified_events_jsonl],
+            args.force,
+            args.from_step,
+            lambda: run_step(
+                py,
+                scripts_dir / "10_visualize_timeline.py",
+                [
+                    "--src",
+                    str(per_person_json),
+                    "--verified_src",
+                    str(verified_events_jsonl),
+                    "--out",
+                    str(timeline_png),
+                    "--gap_tol",
+                    str(args.viz_gap_tol),
+                    "--min_dur",
+                    str(args.viz_min_dur),
+                    "--fps",
+                    str(args.fps),
+                ],
+            ),
+        )
 
     if int(args.export_compat) == 1:
         case_id = args.case_id or name
-        view_name = args.view or ""
         if args.video_id:
             video_id = args.video_id
         else:
             view_code = args.view_code or args.view or "case"
             video_id = f"{view_code}__{case_id}"
-        _export_compat_bundle(
+        _write_pipeline_manifest(
             out_dir=out_dir,
-            video_path=video_path,
             case_id=case_id,
             video_id=video_id,
-            view_name=view_name,
-            pose_tracks=pose_tracks,
-            actions_jsonl=actions_for_downstream,
-            overlay_video=overlay_video,
-            timeline_png=timeline_png,
-            fps_hint=args.fps,
+            artifacts={
+                "pose_keypoints": pose_keypoints,
+                "pose_tracks_smooth": pose_tracks,
+                "pose_tracks_smooth_uq": pose_uq,
+                "actions": actions_jsonl,
+                "transcript": transcript_jsonl,
+                "event_queries": event_queries_jsonl,
+                "align_multimodal": aligned_json,
+                "verifier_samples_train": verifier_samples_train,
+                "verified_events": verified_events_jsonl,
+                "verifier_model": verifier_model,
+                "verifier_eval_report": verifier_eval_report,
+                "verifier_calibration_report": verifier_calibration_report,
+                "per_person_sequences": per_person_json,
+                "timeline_chart_png": timeline_png,
+                "timeline_chart_json": timeline_json,
+            },
+            config_snapshot={
+                "from_step": int(args.from_step),
+                "train_verifier": int(args.train_verifier),
+                "action_mode": str(args.action_mode),
+                "asr_backend": str(args.asr_backend),
+                "interaction_model": str(args.interaction_model),
+                "enable_mllm": int(args.enable_mllm),
+                "eval_target_field": str(args.eval_target_field),
+                "calibration_target_field": str(args.calibration_target_field),
+                "calibration_prob_field": str(args.calibration_prob_field),
+                "calibration_num_bins": int(args.calibration_num_bins),
+                "disable_temperature_scaling": int(args.disable_temperature_scaling),
+            },
         )
 
-    print(f"\n✅ All Steps Completed! Results in: {out_dir}")
-    print(f"👉 Pose Demo Video      : {pose_demo_video}")
-    print(f"👉 Semantic Projection  : {student_projection_json}")
-    print(f"👉 Group Events         : {group_events_jsonl}")
+        # Keep legacy aliases for downstream tools that still consume old names.
+        if pose_tracks.exists():
+            shutil.copy2(pose_tracks, out_dir / f"{case_id}.jsonl")
+        if timeline_json.exists():
+            shutil.copy2(timeline_json, out_dir / "timeline_viz.json")
+
+    print("\n[DONE] formal pipeline completed")
+    print(f"Output dir             : {out_dir}")
+    print(f"Pose tracks UQ         : {pose_uq}")
+    print(f"Event queries          : {event_queries_jsonl}")
+    print(f"Verified events        : {verified_events_jsonl}")
+    print(f"Verifier eval report   : {verifier_eval_report}")
+    print(f"Verifier calibration   : {verifier_calibration_report}")
+    print(f"Verifier model         : {verifier_model if verifier_model.exists() else 'not_used'}")
+    print(f"Timeline chart         : {timeline_png}")
 
 
 if __name__ == "__main__":

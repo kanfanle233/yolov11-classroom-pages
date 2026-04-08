@@ -1,319 +1,365 @@
-# scripts/07_dual_verification.py
-import json
-import os
 import argparse
+import json
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-# ================= 配置区 =================
-DEFAULT_VIDEO_FPS = None          # 如果 actions 里没有 start_time/end_time 只有 frame，就需要 fps
-DEFAULT_VISUAL_TIME_MODE = "start"  # start / end / mid：动作时间戳用开始/结束/中点
-SCHEMA_VERSION = "1.1.0"
-# ==========================================
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from contracts.schemas import SCHEMA_VERSION, validate_jsonl_file, validate_verified_event_record
+from verifier.infer import infer_verified_rows
 
 
-def load_jsonl(path: Path) -> List[Dict[str, Any]]:
-    data: List[Dict[str, Any]] = []
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def _load_json(path: Path) -> Any:
     if not path.exists():
-        return data
-    with open(path, "r", encoding="utf-8") as f:
+        return None
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
                 obj = json.loads(line)
-                if isinstance(obj, dict):
-                    data.append(obj)
             except Exception:
-                # 允许少量脏行，但不直接崩
                 continue
-    return data
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows
 
 
-def _to_float(x: Any) -> Optional[float]:
-    try:
-        if x is None:
-            return None
-        return float(x)
-    except Exception:
-        return None
+def _interval_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
+    inter = min(a1, b1) - max(a0, b0)
+    if inter <= 0:
+        return 0.0
+    denom = max(1e-6, min(a1 - a0, b1 - b0))
+    return inter / denom
 
 
-def _to_int(x: Any) -> Optional[int]:
-    try:
-        if x is None:
-            return None
-        return int(float(x))
-    except Exception:
-        return None
-
-
-def normalize_visual_actions(
-    raw_actions: List[Dict[str, Any]],
-    fps: Optional[float] = None,
-    time_mode: str = "start",
-) -> List[Dict[str, Any]]:
-    """
-    统一 actions.jsonl -> 标准动作片段字段（科研复现核心：统一 schema）
-    输出字段：
-      track_id, action, confidence, time, start_time, end_time, duration,
-      (optional) side, start_frame, end_frame
-    """
+def _normalize_actions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-
-    if time_mode not in ("start", "end", "mid"):
-        time_mode = "start"
-
-    for a in raw_actions:
-        if not isinstance(a, dict):
+    for row in rows:
+        tid = row.get("track_id")
+        if not isinstance(tid, int):
             continue
-
-        track_id = a.get("track_id", a.get("id", a.get("student_id", a.get("tid"))))
-        action = a.get("action", a.get("label", a.get("class_name", a.get("class"))))
-        conf = a.get("confidence", a.get("conf", a.get("score", 1.0)))
-
-        track_id_i = _to_int(track_id)
-        if track_id_i is None or action is None:
-            continue
-
-        conf_f = _to_float(conf)
-        if conf_f is None:
-            conf_f = 1.0
-
-        # 优先用 start_time/end_time（你当前 actions.jsonl 已包含）
-        st = _to_float(a.get("start_time"))
-        et = _to_float(a.get("end_time"))
-
-        # fallback：frame + fps
-        if st is None and et is None:
-            sf = _to_float(a.get("start_frame"))
-            ef = _to_float(a.get("end_frame"))
-            if fps and (sf is not None or ef is not None):
-                if sf is not None:
-                    st = sf / float(fps)
-                if ef is not None:
-                    et = ef / float(fps)
-
-        # time：动作代表点（start/end/mid）
-        t: Optional[float] = None
-        if st is not None and et is not None:
-            if time_mode == "start":
-                t = st
-            elif time_mode == "end":
-                t = et
-            else:
-                t = (st + et) / 2.0
-        elif st is not None:
-            t = st
-        elif et is not None:
-            t = et
-
-        # duration
-        dur = _to_float(a.get("duration"))
-        if dur is None and st is not None and et is not None:
-            dur = max(0.0, et - st)
-
-        item: Dict[str, Any] = {
-            "track_id": track_id_i,
-            "action": str(action).lower().strip(),
-            "confidence": float(conf_f),
-            "time": float(t) if t is not None else None,
-            "start_time": float(st) if st is not None else None,
-            "end_time": float(et) if et is not None else None,
-            "duration": float(dur) if dur is not None else None,
-        }
-
-        # 保留你可能用到的字段（但不强依赖）
-        if "side" in a:
-            item["side"] = a["side"]
-        if "start_frame" in a:
-            item["start_frame"] = a["start_frame"]
-        if "end_frame" in a:
-            item["end_frame"] = a["end_frame"]
-        if "objects_found" in a:
-            item["objects_found"] = a["objects_found"]
-
-        out.append(item)
-
-    # 科研级一致性：先按 track_id 再按 time 排
-    out.sort(key=lambda x: (x["track_id"], x["time"] if x["time"] is not None else 1e18))
-    return out
-
-
-def normalize_transcripts(raw_transcripts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    transcript.jsonl 标准化：start, end, text
-    """
-    out: List[Dict[str, Any]] = []
-    for r in raw_transcripts:
-        if not isinstance(r, dict):
-            continue
-        text = r.get("text")
-        st = _to_float(r.get("start", r.get("time_start", r.get("ts_start"))))
-        et = _to_float(r.get("end", r.get("time_end", r.get("ts_end"))))
-        if text is None or st is None or et is None:
-            continue
-        if et < st:
-            # 防御性修正：避免上游异常造成的倒序
-            st, et = et, st
-        out.append({"start": float(st), "end": float(et), "text": str(text)})
-    out.sort(key=lambda x: x["start"])
-    return out
-
-
-def _validate_visual_actions(visual_actions: List[Dict[str, Any]]) -> Tuple[int, int]:
-    """
-    返回：valid_count, invalid_count
-    """
-    valid = 0
-    invalid = 0
-    for a in visual_actions:
-        ok = True
-        if _to_int(a.get("track_id")) is None:
-            ok = False
-        if not a.get("action"):
-            ok = False
-        # time 可以 None（但尽量不要），这里不强制
-        if ok:
-            valid += 1
-        else:
-            invalid += 1
-    return valid, invalid
-
-
-def build_per_person_sequences(
-    visual_actions: List[Dict[str, Any]],
-    transcripts: List[Dict[str, Any]],
-    duplicate_speech_per_person: bool = True,
-) -> List[Dict[str, Any]]:
-    """
-    输出 people: List[person]
-    person:
-      {
-        "track_id": int,
-        "person_id": int,   # alias，方便论文/前端
-        "visual_sequence": [...],
-        "speech_sequence": [...],  # 默认复制全局 transcript（兼容旧下游）
-      }
-    """
-    per_map: Dict[int, Dict[str, Any]] = {}
-
-    # 收集所有出现过的 track_id
-    ids = sorted({a["track_id"] for a in visual_actions if isinstance(a, dict) and "track_id" in a})
-    for tid in ids:
-        per_map[tid] = {
-            "track_id": int(tid),
-            "person_id": int(tid),
-            "visual_sequence": [],
-        }
-        if duplicate_speech_per_person:
-            per_map[tid]["speech_sequence"] = transcripts
-
-    # 分发动作
-    for a in visual_actions:
-        tid = _to_int(a.get("track_id"))
-        if tid is None:
-            continue
-        if tid not in per_map:
-            per_map[tid] = {
-                "track_id": int(tid),
-                "person_id": int(tid),
-                "visual_sequence": [],
+        st = _safe_float(row.get("start_time", row.get("start", row.get("t", 0.0))), 0.0)
+        ed = _safe_float(row.get("end_time", row.get("end", st + 0.2)), st + 0.2)
+        if ed < st:
+            st, ed = ed, st
+        if ed <= st:
+            ed = st + 0.2
+        out.append(
+            {
+                "track_id": tid,
+                "action": str(row.get("action", row.get("label", ""))).strip().lower(),
+                "start_time": st,
+                "end_time": ed,
+                "action_confidence": _safe_float(row.get("confidence", row.get("conf", 0.5)), 0.5),
             }
-            if duplicate_speech_per_person:
-                per_map[tid]["speech_sequence"] = transcripts
-
-        per_map[tid]["visual_sequence"].append(a)
-
-    # 每个人的 visual_sequence 再按时间排序一次（防御性）
-    people: List[Dict[str, Any]] = []
-    for tid in sorted(per_map.keys()):
-        p = per_map[tid]
-        vs = p.get("visual_sequence", [])
-        if isinstance(vs, list):
-            vs.sort(key=lambda x: x.get("time", 1e18) if x.get("time") is not None else 1e18)
-        people.append(p)
-
-    return people
+        )
+    out.sort(key=lambda x: (x["start_time"], x["track_id"]))
+    return out
 
 
-def main():
+def _load_uq_by_track(path: Path) -> Dict[int, float]:
+    out: Dict[int, List[float]] = {}
+    for row in _load_jsonl(path):
+        if isinstance(row.get("persons"), list):
+            for person in row["persons"]:
+                if not isinstance(person, dict):
+                    continue
+                tid = person.get("track_id")
+                uq = person.get("uq_track", person.get("uq_score"))
+                if isinstance(tid, int) and isinstance(uq, (int, float)):
+                    out.setdefault(tid, []).append(float(uq))
+            continue
+        tid = row.get("track_id")
+        uq = row.get("uq_score", row.get("uq_track"))
+        if isinstance(tid, int) and isinstance(uq, (int, float)):
+            out.setdefault(tid, []).append(float(uq))
+    return {tid: (sum(vals) / len(vals) if vals else 0.5) for tid, vals in out.items()}
+
+
+def _build_aligned_fallback(
+    *,
+    queries: List[Dict[str, Any]],
+    actions: List[Dict[str, Any]],
+    uq_by_track: Dict[int, float],
+    default_window: float = 1.5,
+) -> List[Dict[str, Any]]:
+    aligned = []
+    for q in queries:
+        event_id = str(q.get("event_id", q.get("query_id", "")))
+        event_type = str(q.get("event_type", "unknown"))
+        query_text = str(q.get("query_text", ""))
+        t_center = _safe_float(q.get("timestamp", q.get("t_center", q.get("start", 0.0))), 0.0)
+        w_start = max(0.0, t_center - default_window)
+        w_end = t_center + default_window
+        candidates = []
+        for a in actions:
+            ov = _interval_overlap(w_start, w_end, a["start_time"], a["end_time"])
+            if ov <= 0:
+                continue
+            tid = int(a["track_id"])
+            candidates.append(
+                {
+                    "track_id": tid,
+                    "action": a["action"],
+                    "start_time": a["start_time"],
+                    "end_time": a["end_time"],
+                    "overlap": ov,
+                    "action_confidence": a["action_confidence"],
+                    "uq_track": float(uq_by_track.get(tid, 0.5)),
+                    "uq_score": float(uq_by_track.get(tid, 0.5)),
+                }
+            )
+        candidates.sort(key=lambda x: (x["overlap"], x["action_confidence"]), reverse=True)
+        aligned.append(
+            {
+                "event_id": event_id,
+                "query_id": event_id,
+                "event_type": event_type,
+                "query_text": query_text,
+                "window_start": round(w_start, 3),
+                "window_end": round(w_end, 3),
+                "window_center": round(t_center, 3),
+                "window_size": round(default_window, 3),
+                "basis_motion": 0.0,
+                "basis_uq": 0.0,
+                "window": {
+                    "start": round(w_start, 3),
+                    "end": round(w_end, 3),
+                    "center": round(t_center, 3),
+                    "size": round(default_window, 3),
+                },
+                "motion_basis": 0.0,
+                "uq_basis": 0.0,
+                "candidates": candidates[:8],
+            }
+        )
+    return aligned
+
+
+def _write_per_person_compat(
+    *,
+    per_person_out: Path,
+    actions: List[Dict[str, Any]],
+    queries: List[Dict[str, Any]],
+    verified_rows: List[Dict[str, Any]],
+) -> None:
+    people: Dict[int, Dict[str, Any]] = {}
+    for a in actions:
+        tid = int(a["track_id"])
+        people.setdefault(
+            tid,
+            {
+                "track_id": tid,
+                "person_id": tid,
+                "visual_sequence": [],
+                "speech_sequence": [],
+                "verified_sequence": [],
+            },
+        )
+        people[tid]["visual_sequence"].append(
+            {
+                "track_id": tid,
+                "action": a["action"],
+                "confidence": float(a["action_confidence"]),
+                "start_time": float(a["start_time"]),
+                "end_time": float(a["end_time"]),
+            }
+        )
+
+    speech = []
+    for q in queries:
+        st = _safe_float(q.get("start", q.get("t_center", 0.0)), 0.0)
+        ed = _safe_float(q.get("end", q.get("t_center", st + 0.2)), st + 0.2)
+        speech.append(
+            {
+                "query_id": str(q.get("query_id", q.get("event_id", ""))),
+                "event_type": str(q.get("event_type", "unknown")),
+                "start": st,
+                "end": ed,
+                "text": str(q.get("trigger_text", q.get("query_text", ""))),
+            }
+        )
+    for p in people.values():
+        p["speech_sequence"] = speech
+
+    for row in verified_rows:
+        tid = int(row.get("track_id", -1))
+        if tid >= 0 and tid in people:
+            people[tid]["verified_sequence"].append(row)
+
+    payload = {
+        "meta": {
+            "schema_version": SCHEMA_VERSION,
+            "total_people": len(people),
+            "total_queries": len(queries),
+            "total_verified": len(verified_rows),
+            "note": "compat export generated from verified_events",
+        },
+        "speech_sequence": speech,
+        "people": [people[k] for k in sorted(people.keys())],
+    }
+    per_person_out.parent.mkdir(parents=True, exist_ok=True)
+    with per_person_out.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def main() -> None:
     base_dir = Path(__file__).resolve().parents[1]
-
-    parser = argparse.ArgumentParser(description="Step07: Dual Verification Merge (research-grade schema)")
-    parser.add_argument("--actions", type=str, required=True, help="actions.jsonl path")
-    parser.add_argument("--transcript", type=str, required=True, help="transcript.jsonl path")
-    parser.add_argument("--out", type=str, required=True, help="per_person_sequences.json output path")
-
-    parser.add_argument("--fps", type=float, default=DEFAULT_VIDEO_FPS, help="fallback fps if actions only have frames")
-    parser.add_argument("--time_mode", type=str, default=DEFAULT_VISUAL_TIME_MODE, choices=["start", "end", "mid"])
-    parser.add_argument(
-        "--duplicate_speech",
-        type=int,
-        default=1,
-        help="1=copy transcript into each person (compat), 0=only keep top-level transcript",
-    )
-
+    parser = argparse.ArgumentParser(description="Step07 orchestration: query + align + verifier -> verified_events.jsonl")
+    parser.add_argument("--actions", required=True, type=str, help="actions.jsonl")
+    parser.add_argument("--event_queries", required=True, type=str, help="event_queries.jsonl")
+    parser.add_argument("--pose_uq", required=True, type=str, help="pose_tracks_smooth_uq.jsonl")
+    parser.add_argument("--aligned", default="", type=str, help="align_multimodal.json")
+    parser.add_argument("--out", required=True, type=str, help="verified_events.jsonl")
+    parser.add_argument("--verifier_model", default="", type=str, help="trained verifier checkpoint (.pt)")
+    parser.add_argument("--verifier_config", default="", type=str, help="compat alias for --verifier_model")
+    parser.add_argument("--keep_all_candidates", type=int, default=0)
+    parser.add_argument("--per_person_out", default="", type=str, help="optional compatibility export")
+    parser.add_argument("--validate", type=int, default=1)
     args = parser.parse_args()
 
     action_path = Path(args.actions)
-    transcript_path = Path(args.transcript)
+    query_path = Path(args.event_queries)
+    uq_path = Path(args.pose_uq)
+    aligned_path = Path(args.aligned) if args.aligned else None
     out_path = Path(args.out)
+    model_path = Path(args.verifier_model or args.verifier_config) if (args.verifier_model or args.verifier_config) else None
+    per_person_out = Path(args.per_person_out) if args.per_person_out else None
 
     if not action_path.is_absolute():
         action_path = (base_dir / action_path).resolve()
-    if not transcript_path.is_absolute():
-        transcript_path = (base_dir / transcript_path).resolve()
+    if not query_path.is_absolute():
+        query_path = (base_dir / query_path).resolve()
+    if not uq_path.is_absolute():
+        uq_path = (base_dir / uq_path).resolve()
+    if aligned_path and (not aligned_path.is_absolute()):
+        aligned_path = (base_dir / aligned_path).resolve()
     if not out_path.is_absolute():
         out_path = (base_dir / out_path).resolve()
+    if model_path and (not model_path.is_absolute()):
+        model_path = (base_dir / model_path).resolve()
+    if per_person_out and (not per_person_out.is_absolute()):
+        per_person_out = (base_dir / per_person_out).resolve()
 
-    if not action_path.exists():
-        raise FileNotFoundError(f"找不到 actions.jsonl: {action_path}")
-    if not transcript_path.exists():
-        raise FileNotFoundError(f"找不到 transcript.jsonl: {transcript_path}")
+    queries = _load_jsonl(query_path)
+    q_index = {str(q.get("event_id", q.get("query_id", ""))): q for q in queries}
+    actions = _normalize_actions(_load_jsonl(action_path))
+    uq_by_track = _load_uq_by_track(uq_path)
 
-    raw_actions = load_jsonl(action_path)
-    raw_transcripts = load_jsonl(transcript_path)
+    # Ensure aligned input exists. If not provided, generate fallback alignment.
+    if aligned_path is None or (not aligned_path.exists()):
+        fallback_aligned = _build_aligned_fallback(
+            queries=queries,
+            actions=actions,
+            uq_by_track=uq_by_track,
+        )
+        aligned_path = out_path.with_name("align_multimodal.fallback.json")
+        aligned_path.parent.mkdir(parents=True, exist_ok=True)
+        with aligned_path.open("w", encoding="utf-8") as f:
+            json.dump(fallback_aligned, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] aligned file missing, fallback generated: {aligned_path}")
 
-    visual_actions = normalize_visual_actions(raw_actions, fps=args.fps, time_mode=args.time_mode)
-    transcripts = normalize_transcripts(raw_transcripts)
+    raw_rows = infer_verified_rows(
+        event_queries_path=query_path,
+        aligned_path=aligned_path,
+        pose_uq_path=uq_path,
+        model_path=model_path,
+        keep_all_candidates=bool(int(args.keep_all_candidates)),
+    )
 
-    valid_cnt, invalid_cnt = _validate_visual_actions(visual_actions)
-
-    duplicate = bool(int(args.duplicate_speech) == 1)
-    people = build_per_person_sequences(visual_actions, transcripts, duplicate_speech_per_person=duplicate)
-
-    result: Dict[str, Any] = {
-        "meta": {
+    model_version = f"verifier:{model_path.stem}" if (model_path and model_path.exists()) else "heuristic_v1"
+    verified_rows: List[Dict[str, Any]] = []
+    for row in raw_rows:
+        event_id = str(row.get("event_id", row.get("query_id", "")))
+        query_row = q_index.get(event_id, {})
+        query_time = _safe_float(
+            query_row.get("timestamp", query_row.get("t_center", query_row.get("start", 0.0))),
+            _safe_float(row.get("window_start", row.get("window", {}).get("center", 0.0)), 0.0),
+        )
+        window_obj = row.get("window", {})
+        window_start = _safe_float(row.get("window_start", window_obj.get("start", 0.0)), 0.0)
+        window_end = _safe_float(row.get("window_end", window_obj.get("end", window_start)), window_start)
+        reliability = _safe_float(row.get("reliability_score", 0.0), 0.0)
+        uncertainty = _safe_float(row.get("uncertainty", 1.0 - reliability), 1.0 - reliability)
+        threshold_source = str(
+            row.get(
+                "threshold_source",
+                "model_runtime_config" if (model_path and model_path.exists()) else "heuristic_default",
+            )
+        )
+        runtime_cfg = row.get("runtime_config", {})
+        if not isinstance(runtime_cfg, dict):
+            runtime_cfg = {}
+        label = str(row.get("label", row.get("match_label", "mismatch")))
+        evidence = row.get("evidence", {})
+        out_row = {
             "schema_version": SCHEMA_VERSION,
-            "visual_time_mode": args.time_mode,
-            "fps": args.fps,
-            "total_people": len(people),
-            "total_visual_actions": len(visual_actions),
-            "total_visual_actions_valid": valid_cnt,
-            "total_visual_actions_invalid": invalid_cnt,
-            "total_speech_segments": len(transcripts),
-            "duplicate_speech_per_person": duplicate,
-            "inputs": {
-                "actions": str(action_path),
-                "transcript": str(transcript_path),
+            "event_id": event_id,
+            "query_id": event_id,
+            "track_id": int(row.get("track_id", -1)),
+            "event_type": str(row.get("event_type", query_row.get("event_type", "unknown"))),
+            "query_text": str(row.get("query_text", query_row.get("query_text", ""))),
+            "query_time": query_time,
+            "window_start": window_start,
+            "window_end": window_end,
+            "window": {"start": window_start, "end": window_end},
+            "p_match": _safe_float(row.get("p_match", 0.0), 0.0),
+            "p_mismatch": _safe_float(row.get("p_mismatch", 1.0), 1.0),
+            "reliability_score": reliability,
+            "uncertainty": max(0.0, min(1.0, uncertainty)),
+            "label": label,
+            "match_label": label,
+            "threshold_source": threshold_source,
+            "model_version": model_version,
+            "thresholds": runtime_cfg,
+            "evidence": {
+                "visual_score": _safe_float(evidence.get("visual_score", 0.0), 0.0),
+                "text_score": _safe_float(evidence.get("text_score", 0.0), 0.0),
+                "uq_score": _safe_float(evidence.get("uq_score", 1.0), 1.0),
             },
-        },
-        # 顶层保留全局 transcript，后续你想做“每个人绑定说话人”也从这里扩展
-        "speech_sequence": transcripts,
-        # ✅ 关键修复：people 必须是 list（给 10/可视化/统计统一）
-        "people": people,
-    }
+        }
+        verified_rows.append(out_row)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    with out_path.open("w", encoding="utf-8") as f:
+        for row in verified_rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    print("✅ Step07 输出完成:", out_path)
-    print("meta:", result["meta"])
-    # 额外提示：如果 people 是 list，下游就不会再出现 “people not list” 这种灾难
-    print(f"[CHECK] people type = {type(result['people']).__name__}, len={len(result['people'])}")
+    if int(args.validate) == 1:
+        ok, _, errors = validate_jsonl_file(out_path, validate_verified_event_record)
+        if not ok:
+            first_error = errors[0] if errors else "unknown schema error"
+            raise ValueError(f"invalid verified event schema: {first_error}")
+
+    if per_person_out is not None:
+        _write_per_person_compat(
+            per_person_out=per_person_out,
+            actions=actions,
+            queries=queries,
+            verified_rows=verified_rows,
+        )
+        print(f"[DONE] compat per_person: {per_person_out}")
+
+    print(f"[DONE] verified events: {out_path}")
+    print(f"[INFO] rows: {len(verified_rows)}")
 
 
 if __name__ == "__main__":

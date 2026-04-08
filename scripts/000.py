@@ -1,10 +1,12 @@
-import json
+﻿import json
 import os
 from pathlib import Path
 
+LEGACY_NOTICE = ("[LEGACY/EXPERIMENTAL] scripts/000.py is deprecated and retained for backward compatibility only.")
 
 
-# ===== 配置：不想改其他脚本就用固定位置 =====
+
+# ===== 閰嶇疆锛氫笉鎯虫敼鍏朵粬鑴氭湰灏辩敤鍥哄畾浣嶇疆 =====
 ACTIONS_PATH = Path("output/actions.jsonl")
 TRANSCRIPT_PATH = Path("output/transcript.jsonl")
 OUT_PATH = Path("output/per_person_sequences.json")
@@ -31,9 +33,9 @@ def _to_float(x):
 
 def normalize_actions(raw_actions):
     """
-    统一动作片段字段为：
+    缁熶竴鍔ㄤ綔鐗囨瀛楁涓猴細
     track_id, action, start_time, end_time, confidence, side(optional)
-    兼容你现有 actions.jsonl（start_time/end_time/start_frame/end_frame 都不影响）
+    鍏煎浣犵幇鏈?actions.jsonl锛坰tart_time/end_time/start_frame/end_frame 閮戒笉褰卞搷锛?
     """
     out = []
     for a in raw_actions:
@@ -80,7 +82,7 @@ def normalize_actions(raw_actions):
 
 def normalize_transcript(raw_transcript):
     """
-    transcript.jsonl: 每条至少包含 start/end/text
+    transcript.jsonl: 姣忔潯鑷冲皯鍖呭惈 start/end/text
     """
     out = []
     for r in raw_transcript:
@@ -101,15 +103,16 @@ def normalize_transcript(raw_transcript):
 
 
 def main():
-    base_dir = Path(__file__).resolve().parents[1]  # runs/ 上一层是项目根
+    print(LEGACY_NOTICE)
+    base_dir = Path(__file__).resolve().parents[1]  # runs/ 涓婁竴灞傛槸椤圭洰鏍?
     actions_path = base_dir / ACTIONS_PATH
     transcript_path = base_dir / TRANSCRIPT_PATH
     out_path = base_dir / OUT_PATH
 
     if not actions_path.exists():
-        raise FileNotFoundError(f"找不到 {actions_path}")
+        raise FileNotFoundError(f"鎵句笉鍒?{actions_path}")
     if not transcript_path.exists():
-        raise FileNotFoundError(f"找不到 {transcript_path}")
+        raise FileNotFoundError(f"鎵句笉鍒?{transcript_path}")
 
     raw_actions = load_jsonl(actions_path)
     raw_transcript = load_jsonl(transcript_path)
@@ -124,7 +127,7 @@ def main():
         people[str(tid)] = {
             "person_id": tid,
             "visual_sequence": [],
-            "speech_sequence": transcript,  # 全局音频：每个人一份
+            "speech_sequence": transcript,  # 鍏ㄥ眬闊抽锛氭瘡涓汉涓€浠?
         }
 
     for a in actions:
@@ -143,9 +146,11 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
-    print("✅ per_person_sequences.json 已生成:", out_path)
+    print("鉁?per_person_sequences.json 宸茬敓鎴?", out_path)
     print("meta:", result["meta"])
 
 
 if __name__ == "__main__":
     main()
+
+

@@ -1,40 +1,15 @@
-import os
-import sys
-import json
-import cv2
-import torch
 import argparse
-import numpy as np
+import json
+import math
 import pickle
-from pathlib import Path
 from collections import defaultdict, deque
-from typing import Dict, List
-import torchvision
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-# === 兼容性补丁 START ===
-# PyTorchVideo 依赖旧版 torchvision API，这里手动进行映射修复
-try:
-    import torchvision.transforms.functional_tensor as F_t
-except ImportError:
-    from torchvision.transforms import functional as F_t
+import cv2
+import numpy as np
 
-    sys.modules["torchvision.transforms.functional_tensor"] = F_t
-# === 兼容性补丁 END ===
 
-# PyTorchVideo & TorchVision
-from pytorchvideo.models.hub import slowfast_r50
-from torchvision.transforms import Compose, Lambda
-from torchvision.transforms._transforms_video import (
-    CenterCropVideo,
-    NormalizeVideo,
-)
-from pytorchvideo.transforms import (
-    ApplyTransformToKey,
-    ShortSideScale,
-    UniformTemporalSubsample,
-)
-
-# === 配置区 ===
 CLASS_LABELS = {
     0: "listen",
     1: "distract",
@@ -44,301 +19,401 @@ CLASS_LABELS = {
     5: "note",
     6: "raise_hand",
     7: "stand",
-    8: "read"
+    8: "read",
 }
 
-# 动作采样参数
-CLIP_DURATION = 32  # 输入模型的帧数 (SlowFast 默认 32)
-SAMPLING_RATE = 2  # 跳帧采样 (覆盖 64 帧的物理时间)
-INFERENCE_STRIDE = 30  # 每隔多少帧做一次推理 (约 1.2 秒一次)
-CROP_SIZE = 256  # 输入模型的图像大小
+ACTION_TO_CODE = {v: k for k, v in CLASS_LABELS.items()}
 
 
-def get_device():
-    return "cuda" if torch.cuda.is_available() else "cpu"
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
 
 
-class ActionRecognizer:
-    def __init__(self, model_path=None, device="cuda"):
-        self.device = device
-        print(f"[Model] Loading SlowFast R50 (device={device})...")
+def load_tracks_by_frame(path: Path) -> Dict[int, List[Dict[str, Any]]]:
+    tracks: Dict[int, List[Dict[str, Any]]] = {}
+    if not path.exists():
+        return tracks
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            frame = row.get("frame")
+            persons = row.get("persons", [])
+            if isinstance(frame, int) and isinstance(persons, list):
+                tracks[frame] = [p for p in persons if isinstance(p, dict)]
+    return tracks
 
-        # 1. 加载预训练的 Backbone (Kinetics-400)
-        self.model = slowfast_r50(pretrained=True)
 
-        # 2. [关键修改] 强制修改全连接层以匹配教室行为类别数 (9类)
-        # 获取输入特征维度 (通常是 2304)
-        in_features = self.model.blocks[-1].proj.in_features
-        self.model.blocks[-1].proj = torch.nn.Linear(in_features, len(CLASS_LABELS))
+def _mid(a: Dict[str, Any], b: Dict[str, Any]) -> Tuple[float, float]:
+    return ((_safe_float(a.get("x")) + _safe_float(b.get("x"))) * 0.5, (_safe_float(a.get("y")) + _safe_float(b.get("y"))) * 0.5)
 
-        # 3. 加载权重 (如果有)
-        if model_path and os.path.exists(model_path):
-            print(f"[Model] Loading custom weights from {model_path}")
-            state_dict = torch.load(model_path, map_location=device)
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
-            self.model.load_state_dict(state_dict, strict=False)
+
+def _rule_action(kpts: List[Dict[str, Any]], bbox: List[Any], h_median: float) -> str:
+    if len(kpts) < 13:
+        return "listen"
+
+    def _ok(i: int) -> bool:
+        return i < len(kpts) and isinstance(kpts[i], dict)
+
+    if not all(_ok(i) for i in [0, 5, 6, 9, 10, 11, 12]):
+        return "listen"
+
+    ls, rs = kpts[5], kpts[6]
+    lw, rw = kpts[9], kpts[10]
+    nose = kpts[0]
+    lh, rh = kpts[11], kpts[12]
+
+    sh = _mid(ls, rs)
+    hp = _mid(lh, rh)
+    torso = abs(hp[1] - sh[1]) + 1e-6
+
+    # Raise hand
+    if _safe_float(lw.get("y")) < _safe_float(ls.get("y")) - 0.15 * torso:
+        return "raise_hand"
+    if _safe_float(rw.get("y")) < _safe_float(rs.get("y")) - 0.15 * torso:
+        return "raise_hand"
+
+    # Head down / doze
+    shoulder_mid_y = (_safe_float(ls.get("y")) + _safe_float(rs.get("y"))) * 0.5
+    nose_y = _safe_float(nose.get("y"))
+    if nose_y > shoulder_mid_y + 0.18 * torso:
+        return "doze"
+    if nose_y > shoulder_mid_y + 0.10 * torso:
+        return "note"
+
+    # Stand
+    h = _safe_float(bbox[3]) - _safe_float(bbox[1]) if len(bbox) >= 4 else 0.0
+    if h_median > 1.0 and h > 1.18 * h_median:
+        return "stand"
+
+    return "listen"
+
+
+def _merge_actions(rows: List[Dict[str, Any]], gap_tol: float = 0.22) -> List[Dict[str, Any]]:
+    if not rows:
+        return rows
+    rows = sorted(rows, key=lambda x: (x["track_id"], x["start_time"], x["end_time"]))
+    out: List[Dict[str, Any]] = [rows[0]]
+    for row in rows[1:]:
+        last = out[-1]
+        same_track = row["track_id"] == last["track_id"]
+        same_action = row["action"] == last["action"]
+        close = row["start_time"] <= last["end_time"] + gap_tol
+        if same_track and same_action and close:
+            last["end_time"] = max(last["end_time"], row["end_time"])
+            last["end_frame"] = max(last["end_frame"], row["end_frame"])
+            last["duration"] = float(last["end_time"] - last["start_time"])
+            last["conf"] = float((last["conf"] + row["conf"]) * 0.5)
         else:
-            print("[Model] Warning: No custom weights found. Using random head for demo purposes.")
+            out.append(row)
+    return out
 
-        self.model = self.model.eval().to(device)
 
-        # === [修复] 特征提取 Hook ===
-        # 原来的 blocks[-1].pool 是 None，导致报错。
-        # 现在的策略：Hook 到全连接层 (proj)，截取它的"输入" (Input)
-        self.current_embedding = None
+def _export_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-        def hook_fn(module, input, output):
-            # input 是一个 tuple (tensor, )
-            # tensor shape: (Batch, 2304) -> 这就是我们要的 Embedding
-            self.current_embedding = input[0].detach().cpu().numpy()
 
-        # 注册 Hook 到 blocks[-1].proj (全连接分类层)
-        self.model.blocks[-1].proj.register_forward_hook(hook_fn)
+def _run_rules_backend(
+    *,
+    frame_tracks: Dict[int, List[Dict[str, Any]]],
+    fps: float,
+) -> Tuple[List[Dict[str, Any]], Dict[int, List[Any]]]:
+    heights_by_tid: Dict[int, List[float]] = defaultdict(list)
+    for _, persons in frame_tracks.items():
+        for p in persons:
+            tid = p.get("track_id")
+            bbox = p.get("bbox", [])
+            if not isinstance(tid, int) or not isinstance(bbox, list) or len(bbox) < 4:
+                continue
+            h = _safe_float(bbox[3]) - _safe_float(bbox[1])
+            if h > 0:
+                heights_by_tid[tid].append(h)
 
-        # 4. 定义预处理 Pipeline
-        side_size = 256
-        mean = [0.45, 0.45, 0.45]
-        std = [0.225, 0.225, 0.225]
+    median_h: Dict[int, float] = {}
+    for tid, hs in heights_by_tid.items():
+        hs = sorted(hs)
+        median_h[tid] = hs[len(hs) // 2] if hs else 0.0
 
-        self.transform = ApplyTransformToKey(
-            key="video",
-            transform=Compose(
-                [
-                    UniformTemporalSubsample(CLIP_DURATION),
-                    Lambda(lambda x: x / 255.0),
-                    NormalizeVideo(mean, std),
-                    ShortSideScale(size=side_size),
-                    CenterCropVideo(CROP_SIZE),
-                ]
-            ),
-        )
+    raw_rows: List[Dict[str, Any]] = []
+    for frame in sorted(frame_tracks.keys()):
+        persons = frame_tracks[frame]
+        for p in persons:
+            tid = p.get("track_id")
+            bbox = p.get("bbox", [])
+            kpts = p.get("keypoints", [])
+            if not isinstance(tid, int) or not isinstance(bbox, list) or not isinstance(kpts, list):
+                continue
+            action = _rule_action(kpts, bbox, h_median=median_h.get(tid, 0.0))
+            conf_vals = []
+            for kp in kpts:
+                if isinstance(kp, dict):
+                    conf_vals.append(_safe_float(kp.get("c"), 0.0))
+            conf = (sum(conf_vals) / len(conf_vals)) if conf_vals else 0.0
+            st = frame / fps
+            ed = (frame + 1) / fps
+            raw_rows.append(
+                {
+                    "track_id": tid,
+                    "action": action,
+                    "action_code": ACTION_TO_CODE.get(action, 0),
+                    "conf": float(max(0.0, min(1.0, conf))),
+                    "start_time": float(st),
+                    "end_time": float(ed),
+                    "start_frame": int(frame),
+                    "end_frame": int(frame + 1),
+                    "frame": int(frame),
+                    "t": float(st),
+                    "source": "rule_baseline",
+                }
+            )
 
-    def infer(self, frame_buffer: List[np.ndarray]):
-        """
-        frame_buffer: list of BGR images (H, W, 3)
-        """
-        # 1. 转换格式
-        frames = [cv2.cvtColor(f, cv2.COLOR_BGR2RGB) for f in frame_buffer]
-        tensor = torch.from_numpy(np.array(frames)).float()
-        tensor = tensor.permute(3, 0, 1, 2)  # (C, T, H, W)
+    merged = _merge_actions(raw_rows)
+    return merged, {}
 
-        # 2. 应用预处理
-        input_data = {"video": tensor}
-        input_data = self.transform(input_data)
-        video_data = input_data["video"]
 
-        # 3. 构造 SlowFast 输入
-        inputs = [i.to(self.device)[None, ...] for i in self.model_pack_pathways(video_data)]
+def _run_slowfast_backend(
+    *,
+    video_path: Path,
+    frame_tracks: Dict[int, List[Dict[str, Any]]],
+    model_weight: str,
+    stride: int,
+    clip_duration: int,
+    crop_size: int,
+    device: str,
+) -> Tuple[List[Dict[str, Any]], Dict[int, List[Any]]]:
+    # Lazy imports so `--model_mode rules` works without heavy deps.
+    import sys
 
-        # 4. 推理 (Hook 会在这里自动触发，填充 self.current_embedding)
-        with torch.no_grad():
-            preds = self.model(inputs)
-            probs = torch.nn.functional.softmax(preds, dim=1)
+    import torch
+    import torchvision
+    from pytorchvideo.models.hub import slowfast_r50
+    from pytorchvideo.transforms import ApplyTransformToKey, ShortSideScale, UniformTemporalSubsample
+    from torchvision.transforms import Compose, Lambda
+    from torchvision.transforms._transforms_video import CenterCropVideo, NormalizeVideo
 
-        # 5. 获取结果
-        top_val, top_idx = torch.max(probs, dim=1)
-        idx = top_idx.item()
-        conf = top_val.item()
+    try:
+        import torchvision.transforms.functional_tensor as F_t  # type: ignore
+    except Exception:
+        from torchvision.transforms import functional as F_t  # type: ignore
 
-        return idx, conf
+        sys.modules["torchvision.transforms.functional_tensor"] = F_t
 
-    def model_pack_pathways(self, video_tensor):
-        """
-        构建 SlowFast 双流输入
-        """
+    if device == "":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = slowfast_r50(pretrained=True)
+    in_features = model.blocks[-1].proj.in_features
+    model.blocks[-1].proj = torch.nn.Linear(in_features, len(CLASS_LABELS))
+    if model_weight and Path(model_weight).exists():
+        state = torch.load(model_weight, map_location=device)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
+        model.load_state_dict(state, strict=False)
+    model = model.eval().to(device)
+
+    current_embedding = {"vec": None}
+
+    def hook_fn(module, module_input, module_output):
+        if module_input and len(module_input) > 0:
+            current_embedding["vec"] = module_input[0].detach().cpu().numpy()
+
+    model.blocks[-1].proj.register_forward_hook(hook_fn)
+
+    transform = ApplyTransformToKey(
+        key="video",
+        transform=Compose(
+            [
+                UniformTemporalSubsample(clip_duration),
+                Lambda(lambda x: x / 255.0),
+                NormalizeVideo([0.45, 0.45, 0.45], [0.225, 0.225, 0.225]),
+                ShortSideScale(size=256),
+                CenterCropVideo(crop_size),
+            ]
+        ),
+    )
+
+    def _pack_pathways(video_tensor):
         fast_pathway = video_tensor
         slow_pathway = torch.index_select(
             video_tensor,
             1,
-            torch.linspace(
-                0, video_tensor.shape[1] - 1, video_tensor.shape[1] // 4
-            ).long(),
+            torch.linspace(0, video_tensor.shape[1] - 1, video_tensor.shape[1] // 4).long(),
         )
         return [slow_pathway, fast_pathway]
 
+    def _crop_person(frame, bbox, padding=0.2):
+        h_img, w_img = frame.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        w_box = x2 - x1
+        h_box = y2 - y1
+        cx, cy = x1 + w_box // 2, y1 + h_box // 2
+        size = int(max(w_box, h_box) * (1 + padding))
+        hs = size // 2
+        x1n = max(0, cx - hs)
+        y1n = max(0, cy - hs)
+        x2n = min(w_img, cx + hs)
+        y2n = min(h_img, cy + hs)
+        crop = frame[y1n:y2n, x1n:x2n]
+        if crop.size == 0:
+            return cv2.resize(frame, (crop_size, crop_size))
+        return cv2.resize(crop, (crop_size, crop_size))
 
-def crop_person(frame, bbox, padding=0.2):
-    h_img, w_img = frame.shape[:2]
-    x1, y1, x2, y2 = map(int, bbox)
-
-    w_box = x2 - x1
-    h_box = y2 - y1
-    cx, cy = x1 + w_box // 2, y1 + h_box // 2
-
-    size = max(w_box, h_box) * (1 + padding)
-    half_size = int(size / 2)
-
-    x1_new = max(0, cx - half_size)
-    y1_new = max(0, cy - half_size)
-    x2_new = min(w_img, cx + half_size)
-    y2_new = min(h_img, cy + half_size)
-
-    crop = frame[y1_new:y2_new, x1_new:x2_new]
-
-    if crop.size == 0:
-        return cv2.resize(frame, (CROP_SIZE, CROP_SIZE))
-
-    return cv2.resize(crop, (CROP_SIZE, CROP_SIZE))
-
-
-def load_tracks_by_frame(path):
-    tracks = defaultdict(list)
-    if not os.path.exists(path):
-        return tracks
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                d = json.loads(line)
-                tracks[d["frame"]] = d["persons"]
-            except:
-                continue
-    return tracks
-
-
-def main():
-    base_dir = Path(__file__).resolve().parents[1]
-
-    global CLIP_DURATION, SAMPLING_RATE, INFERENCE_STRIDE, CROP_SIZE
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--video", type=str, required=True)
-    parser.add_argument("--pose", type=str, required=True, help="pose_tracks_smooth.jsonl")
-    parser.add_argument("--out", type=str, required=True, help="actions.jsonl")
-    parser.add_argument("--model_weight", type=str, default="", help="path to custom .pth")
-    parser.add_argument("--emb_out", type=str, default="", help="output path for embeddings.pkl")
-    parser.add_argument("--device", type=str, default="", help="device: 0/cuda/cpu; empty=auto")
-    parser.add_argument("--stride", type=int, default=INFERENCE_STRIDE, help="frames between inferences")
-    parser.add_argument("--clip_duration", type=int, default=CLIP_DURATION, help="frames per clip")
-    parser.add_argument("--sampling_rate", type=int, default=SAMPLING_RATE, help="temporal sampling rate")
-    parser.add_argument("--crop_size", type=int, default=CROP_SIZE, help="crop size for model input")
-
-    args = parser.parse_args()
-
-    CLIP_DURATION = int(args.clip_duration)
-    SAMPLING_RATE = int(args.sampling_rate)
-    INFERENCE_STRIDE = int(args.stride)
-    CROP_SIZE = int(args.crop_size)
-
-    video_path = Path(args.video)
-    if not video_path.is_absolute(): video_path = base_dir / video_path
-
-    pose_path = Path(args.pose)
-    if not pose_path.is_absolute(): pose_path = base_dir / pose_path
-
-    out_path = Path(args.out)
-    if not out_path.is_absolute(): out_path = base_dir / out_path
-
-    emb_out_path = Path(args.emb_out) if args.emb_out else out_path.parent / "embeddings.pkl"
-
-    if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
-    if not pose_path.exists():
-        raise FileNotFoundError(f"Pose tracks not found: {pose_path}")
-
-    device = args.device if args.device else get_device()
-
-    # 1. 加载模型
-    recognizer = ActionRecognizer(model_path=args.model_weight, device=device)
-
-    # 2. 加载 Track 数据
-    print(f"[Data] Loading tracks from {pose_path}...")
-    frame_tracks = load_tracks_by_frame(pose_path)
-    if not frame_tracks:
-        print("[Error] No tracks loaded. Please check pose_tracks_smooth.jsonl.")
-        return
-
-    # 3. 准备视频读取
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
+        raise RuntimeError(f"cannot open video: {video_path}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Buffer
-    person_buffers = defaultdict(lambda: deque(maxlen=CLIP_DURATION * SAMPLING_RATE))
-    last_seen = {}
-
-    actions_out = []
-    track_embeddings = defaultdict(list)
-
+    buffers = defaultdict(lambda: deque(maxlen=max(clip_duration * 2, clip_duration)))
+    actions: List[Dict[str, Any]] = []
+    embeddings = defaultdict(list)
     frame_idx = 0
-    print(f"[Info] Starting inference on {video_path.name}...")
 
     while True:
         ok, frame = cap.read()
-        if not ok: break
+        if not ok:
+            break
 
-        persons = frame_tracks.get(frame_idx, [])
+        for p in frame_tracks.get(frame_idx, []):
+            tid = p.get("track_id")
+            bbox = p.get("bbox")
+            if not isinstance(tid, int) or not isinstance(bbox, list):
+                continue
+            crop = _crop_person(frame, bbox)
+            buffers[tid].append(crop)
 
-        for p in persons:
-            tid = p["track_id"]
-            bbox = p["bbox"]
-            last_seen[tid] = frame_idx
+            if len(buffers[tid]) >= clip_duration and frame_idx % stride == 0:
+                buffer = list(buffers[tid])
+                idx = np.linspace(0, len(buffer) - 1, clip_duration).astype(int)
+                frames = [cv2.cvtColor(buffer[i], cv2.COLOR_BGR2RGB) for i in idx]
+                tensor = torch.from_numpy(np.array(frames)).float().permute(3, 0, 1, 2)
+                video_data = transform({"video": tensor})["video"]
+                inputs = [x.to(device)[None, ...] for x in _pack_pathways(video_data)]
+                with torch.no_grad():
+                    probs = torch.nn.functional.softmax(model(inputs), dim=1)
+                top_val, top_idx = torch.max(probs, dim=1)
+                label_id = int(top_idx.item())
+                conf = float(top_val.item())
 
-            crop = crop_person(frame, bbox)
-            person_buffers[tid].append(crop)
+                st = frame_idx / fps
+                ed = (frame_idx + stride) / fps
+                actions.append(
+                    {
+                        "track_id": tid,
+                        "action": CLASS_LABELS.get(label_id, "listen"),
+                        "action_code": label_id,
+                        "conf": conf,
+                        "start_time": st,
+                        "end_time": ed,
+                        "start_frame": frame_idx,
+                        "end_frame": frame_idx + stride,
+                        "frame": frame_idx,
+                        "t": st,
+                        "source": "slowfast",
+                    }
+                )
 
-            if len(person_buffers[tid]) >= CLIP_DURATION and frame_idx % INFERENCE_STRIDE == 0:
-                # 采样
-                raw_buffer = list(person_buffers[tid])
-                indices = np.linspace(0, len(raw_buffer) - 1, CLIP_DURATION).astype(int)
-                input_frames = [raw_buffer[i] for i in indices]
-
-                # === 推理 ===
-                cls_idx, conf = recognizer.infer(input_frames)
-
-                # [新增] 收集特征
-                if recognizer.current_embedding is not None:
-                    # current_embedding 是 batch=1 的数组 (1, 2304)
-                    emb_vec = recognizer.current_embedding[0]
-                    track_embeddings[tid].append(emb_vec)
-
-                label = CLASS_LABELS.get(cls_idx, "unknown")
-                timestamp = frame_idx / fps
-                duration = INFERENCE_STRIDE / fps
-
-                actions_out.append({
-                    "track_id": tid,
-                    "action": label,
-                    "action_code": cls_idx,
-                    "conf": float(f"{conf:.4f}"),
-                    "start_time": float(f"{timestamp:.4f}"),
-                    "end_time": float(f"{timestamp + duration:.4f}"),
-                    "start_frame": frame_idx,
-                    "end_frame": frame_idx + INFERENCE_STRIDE,
-                    "frame": frame_idx,
-                    "t": timestamp
-                })
-
-                if len(actions_out) % 10 == 0:
-                    print(f"\r[Process] Frame {frame_idx}/{total_frames} | Detected: ID {tid} -> {label} ({conf:.2f})",
-                          end="")
-
-        # 内存优化
-        if frame_idx % 100 == 0:
-            stale_ids = [tid for tid, last_f in last_seen.items() if frame_idx - last_f > 100]
-            for tid in stale_ids:
-                if tid in person_buffers: del person_buffers[tid]
-                del last_seen[tid]
+                emb = current_embedding.get("vec")
+                if emb is not None:
+                    embeddings[tid].append(([int(frame_idx), int(frame_idx + stride)], emb[0].astype(np.float32).reshape(-1).tolist()))
 
         frame_idx += 1
 
     cap.release()
+    actions = _merge_actions(actions)
+    return actions, dict(embeddings)
 
-    # 1. 保存 Action JSONL
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        for a in actions_out:
-            f.write(json.dumps(a, ensure_ascii=False) + "\n")
 
-    # 2. 保存 Embeddings
-    emb_out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(emb_out_path, "wb") as f:
-        pickle.dump(dict(track_embeddings), f)
+def main() -> None:
+    base_dir = Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--video", type=str, required=True)
+    parser.add_argument("--pose", type=str, required=True, help="pose_tracks_smooth.jsonl")
+    parser.add_argument("--out", type=str, required=True, help="actions.jsonl")
+    parser.add_argument("--model_weight", type=str, default="", help="custom .pth for slowfast head")
+    parser.add_argument("--emb_out", type=str, default="", help="output embeddings.pkl")
+    parser.add_argument("--device", type=str, default="", help="cuda/cpu")
+    parser.add_argument("--stride", type=int, default=30)
+    parser.add_argument("--clip_duration", type=int, default=32)
+    parser.add_argument("--crop_size", type=int, default=256)
+    parser.add_argument("--save_keyframes", type=int, default=0)
+    parser.add_argument("--keyframe_dir", type=str, default="")
+    parser.add_argument("--model_mode", choices=["auto", "slowfast", "rules"], default="auto")
+    args = parser.parse_args()
 
-    print(f"\n[Done] Saved {len(actions_out)} actions to {out_path}")
-    print(f"[Done] Saved embeddings to {emb_out_path} (IDs: {len(track_embeddings)})")
+    video_path = Path(args.video)
+    pose_path = Path(args.pose)
+    out_path = Path(args.out)
+    if not video_path.is_absolute():
+        video_path = (base_dir / video_path).resolve()
+    if not pose_path.is_absolute():
+        pose_path = (base_dir / pose_path).resolve()
+    if not out_path.is_absolute():
+        out_path = (base_dir / out_path).resolve()
+
+    emb_out = Path(args.emb_out) if args.emb_out else out_path.parent / "embeddings.pkl"
+    if not emb_out.is_absolute():
+        emb_out = (base_dir / emb_out).resolve()
+
+    if not pose_path.exists():
+        raise FileNotFoundError(f"pose tracks not found: {pose_path}")
+    if not video_path.exists():
+        raise FileNotFoundError(f"video not found: {video_path}")
+
+    frame_tracks = load_tracks_by_frame(pose_path)
+    if not frame_tracks:
+        _export_jsonl(out_path, [])
+        with emb_out.open("wb") as f:
+            pickle.dump({}, f)
+        print(f"[WARN] empty pose tracks, wrote empty actions: {out_path}")
+        return
+
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    cap.release()
+
+    actions: List[Dict[str, Any]] = []
+    embeddings: Dict[int, List[Any]] = {}
+
+    mode = args.model_mode
+    if mode == "rules":
+        actions, embeddings = _run_rules_backend(frame_tracks=frame_tracks, fps=fps)
+    else:
+        try:
+            actions, embeddings = _run_slowfast_backend(
+                video_path=video_path,
+                frame_tracks=frame_tracks,
+                model_weight=args.model_weight,
+                stride=int(args.stride),
+                clip_duration=int(args.clip_duration),
+                crop_size=int(args.crop_size),
+                device=args.device,
+            )
+            print("[INFO] slowfast backend completed.")
+        except Exception as exc:
+            if mode == "slowfast":
+                raise RuntimeError(f"slowfast backend failed (no fallback in strict mode): {exc}") from exc
+            print(f"[WARN] slowfast backend unavailable, fallback to rules baseline: {exc}")
+            actions, embeddings = _run_rules_backend(frame_tracks=frame_tracks, fps=fps)
+
+    _export_jsonl(out_path, actions)
+    emb_out.parent.mkdir(parents=True, exist_ok=True)
+    with emb_out.open("wb") as f:
+        pickle.dump(embeddings, f)
+
+    print(f"[DONE] actions: {out_path} ({len(actions)})")
+    print(f"[DONE] embeddings: {emb_out}")
+    print(f"[INFO] mode: {mode}")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,10 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any
 
+LEGACY_NOTICE = (
+    "[LEGACY] intelligence_class/tools/xx_align_multimodal.py is legacy. "
+    "Use scripts/xx_align_multimodal.py in the formal pipeline."
+)
 
 # ===========================
 # 1. 辅助函数：读取数据
@@ -230,6 +234,7 @@ def run_alignment(
 
 
 if __name__ == "__main__":
+    print(LEGACY_NOTICE)
     parser = argparse.ArgumentParser()
     parser.add_argument("--case_dir", required=True, help="具体的 Case 目录，例如 .../rear__006")
     parser.add_argument("--fps", type=float, default=30.0)

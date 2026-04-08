@@ -49,6 +49,28 @@ def ema_update(prev, cur, alpha=0.75):
     return out
 
 
+def normalize_keypoints_17(keypoints):
+    """Ensure exactly 17 keypoints with x/y/c triplets."""
+    out = []
+    keypoints = keypoints or []
+    for i in range(min(17, len(keypoints))):
+        k = keypoints[i]
+        if isinstance(k, dict):
+            out.append(
+                {
+                    "x": float(k.get("x", 0.0)),
+                    "y": float(k.get("y", 0.0)),
+                    "c": float(k.get("c", 0.0) if k.get("c", None) is not None else 0.0),
+                }
+            )
+        elif isinstance(k, (list, tuple)) and len(k) >= 2:
+            c = float(k[2]) if len(k) > 2 and k[2] is not None else 0.0
+            out.append({"x": float(k[0]), "y": float(k[1]), "c": c})
+    while len(out) < 17:
+        out.append({"x": 0.0, "y": 0.0, "c": 0.0})
+    return out
+
+
 def main():
     base_dir = Path(__file__).resolve().parents[1]
 
@@ -213,7 +235,7 @@ def main():
                     det_to_tid[di] = tid
                     tracks[tid] = {
                         "bbox": d["bbox"],
-                        "kpts": d["keypoints"],
+                        "kpts": normalize_keypoints_17(d.get("keypoints")),
                         "last_frame": frame,
                         "len": 0
                     }
@@ -225,9 +247,9 @@ def main():
                 st = tracks[tid]
 
                 if st["len"] == 0:
-                    smooth = d["keypoints"]
+                    smooth = normalize_keypoints_17(d.get("keypoints"))
                 else:
-                    smooth = ema_update(st["kpts"], d["keypoints"], alpha)
+                    smooth = ema_update(st["kpts"], normalize_keypoints_17(d.get("keypoints")), alpha)
 
                 st["bbox"] = d["bbox"]
                 st["kpts"] = smooth

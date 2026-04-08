@@ -1,122 +1,140 @@
-import os
+import argparse
 import json
 import subprocess
-import argparse
 from pathlib import Path
-from typing import List
+from typing import Any
 
-# ==========================================
-# 关键修改 1：设置 Hugging Face 国内镜像，解决 SSLError 下载失败问题
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+import cv2
 
 
-# ==========================================
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
 
-def run(cmd: List[str]) -> None:
-    # 屏蔽 ffmpeg 输出
+
+def _video_duration(video_path: Path) -> float:
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return 0.5
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    n = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+    cap.release()
+    if fps <= 0:
+        return 0.5
+    return max(0.5, float(n) / float(fps))
+
+
+def _write_placeholder(path: Path, video_path: Path, reason: str) -> None:
+    row = {
+        "start": 0.0,
+        "end": round(_video_duration(video_path), 3),
+        "text": f"[ASR_EMPTY:{reason}]",
+        "source": "asr_placeholder",
+        "is_placeholder": True,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _extract_wav(video_path: Path, wav_path: Path, ffmpeg: str, sr: int) -> None:
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(video_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(sr),
+        "-c:a",
+        "pcm_s16le",
+        str(wav_path),
+    ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def extract_wav(ffmpeg_exe: str, video_path: str, wav_path: str, sr: int = 16000) -> None:
-    # 提取音频
-    cmd = [
-        ffmpeg_exe, "-y",
-        "-i", video_path,
-        "-vn",
-        "-ac", "1",
-        "-ar", str(sr),
-        "-c:a", "pcm_s16le",
-        wav_path
-    ]
-    run(cmd)
-
-
-def main():
+def main() -> None:
     base_dir = Path(__file__).resolve().parents[1]
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--video", type=str, default=str(base_dir / "data" / "videos" / "demo1.mp4"),
-                        help="input mp4 path (absolute or relative to project root)")
-    parser.add_argument("--out_dir", type=str, default=str(base_dir / "output"),
-                        help="output dir for wav + transcript.jsonl")
+    parser = argparse.ArgumentParser(description="Whisper ASR to transcript.jsonl with non-empty guarantee.")
+    parser.add_argument("--video", required=True, type=str)
+    parser.add_argument("--out_dir", required=True, type=str)
     parser.add_argument("--ffmpeg", type=str, default="ffmpeg")
     parser.add_argument("--sr", type=int, default=16000)
-
-    # ==========================================
-    # 关键修改 2：默认语言改为 "zh" (中文)，否则中文视频会识别成乱码
     parser.add_argument("--lang", type=str, default="zh")
-    # ==========================================
-
+    parser.add_argument("--model", type=str, default="small")
     args = parser.parse_args()
 
-    # 兼容：允许传相对路径
-    video_path = args.video
-    if not os.path.isabs(video_path):
-        video_path = str((base_dir / video_path).resolve())
-
+    video_path = Path(args.video)
     out_dir = Path(args.out_dir)
+    if not video_path.is_absolute():
+        video_path = (base_dir / video_path).resolve()
     if not out_dir.is_absolute():
         out_dir = (base_dir / out_dir).resolve()
+
+    if not video_path.exists():
+        raise FileNotFoundError(f"video not found: {video_path}")
+
     out_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = out_dir / "asr_audio_16k.wav"
+    transcript_path = out_dir / "transcript.jsonl"
 
-    wav_path = str(out_dir / "asr_audio_16k.wav")
-    jsonl_path = str(out_dir / "transcript.jsonl")
-    ffmpeg_exe = args.ffmpeg
-
-    if not os.path.exists(video_path):
-        print(f"[ERROR] 找不到视频: {video_path}")
-        return
-
-    print("[INFO] 1. 提取音频...")
-    extract_wav(ffmpeg_exe, video_path, wav_path, sr=args.sr)
-
-    print("[INFO] 2. 加载 Whisper (CPU/Int8)...")
     try:
         from faster_whisper import WhisperModel
-        # 如果 small 还是效果不好，可以尝试改用 "medium" (速度会慢一倍，但抗噪能力强很多)
-        model = WhisperModel("small", device="cpu", compute_type="int8")
-    except ImportError:
-        print("请 pip install faster-whisper")
+    except Exception:
+        _write_placeholder(transcript_path, video_path, "faster_whisper_not_installed")
+        print(f"[WARN] faster-whisper missing, wrote placeholder: {transcript_path}")
         return
 
-    print(f"[INFO] 3. 开始识别 (语言={args.lang}, 已关闭 VAD 过滤器)...")
+    try:
+        _extract_wav(video_path, wav_path, ffmpeg=args.ffmpeg, sr=int(args.sr))
+    except Exception:
+        _write_placeholder(transcript_path, video_path, "ffmpeg_extract_failed")
+        print(f"[WARN] ffmpeg failed, wrote placeholder: {transcript_path}")
+        return
 
-    segments, info = model.transcribe(
-        wav_path,
-        language=args.lang,  # 使用修改后的中文设置
-        vad_filter=False,  # 关键！关闭静音过滤
-        beam_size=5,
-        initial_prompt=None,  # 移除提示词，避免幻觉
-        condition_on_previous_text=False,  # 防止重复循环
-        no_speech_threshold=0.6  # 放宽“非语音”的判定阈值
-    )
+    try:
+        model = WhisperModel(args.model, device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(
+            str(wav_path),
+            language=args.lang,
+            vad_filter=False,
+            beam_size=5,
+            condition_on_previous_text=False,
+        )
+    except Exception:
+        _write_placeholder(transcript_path, video_path, "whisper_inference_failed")
+        print(f"[WARN] whisper inference failed, wrote placeholder: {transcript_path}")
+        return
 
-    n = 0
-    with open(jsonl_path, "w", encoding="utf-8") as f:
-        print("-" * 50)
+    count = 0
+    with transcript_path.open("w", encoding="utf-8") as f:
         for seg in segments:
-            text = seg.text.strip()
-            # 过滤掉那种极短的杂音（比如 "hmm", "."）
-            if len(text) < 1:  # 中文可能只有1个字，改宽一点
+            text = str(seg.text).strip()
+            if not text:
                 continue
-
-            obj = {
-                "start": round(float(seg.start), 2),
-                "end": round(float(seg.end), 2),
-                "text": text
+            start = _safe_float(seg.start, 0.0)
+            end = _safe_float(seg.end, start + 0.2)
+            if end <= start:
+                end = start + 0.2
+            row = {
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "text": text,
+                "source": "whisper",
             }
-            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-            print(f"[{obj['start']:>6.2f}s - {obj['end']:>6.2f}s] {text}")
-            n += 1
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            count += 1
 
-    print("-" * 50)
-    print(f"[DONE] 成功识别出 {n} 条语句")
-    print(f"[PATH] {jsonl_path}")
+    if count == 0:
+        _write_placeholder(transcript_path, video_path, "empty_whisper_result")
 
-    if n > 0:
-        print("✅ 成功！现在可以进入下一步（生成 per_person_sequences + overlay）。")
-    else:
-        print("❌ 依然为 0。可能需要检查是否需要 'volume=10dB' 的放大处理。")
+    print(f"[DONE] transcript: {transcript_path}")
+    print(f"[INFO] segments: {count}")
 
 
 if __name__ == "__main__":

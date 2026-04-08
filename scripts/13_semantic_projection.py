@@ -48,7 +48,13 @@ def main():
         # 1. 处理列表中的每个张量
         processed_vecs = []
         for v in vec_list:
-            v = np.array(v)
+            if isinstance(v, dict) and "embedding" in v:
+                v = np.array(v["embedding"])
+            elif isinstance(v, (list, tuple)) and len(v) == 2 and isinstance(v[0], (list, tuple, dict)):
+                # compatibility: [(frame_range, embedding_vector), ...]
+                v = np.array(v[1])
+            else:
+                v = np.array(v)
             # 如果特征向量维度 > 1 (比如 1x2x2x2304)，进行平均池化
             if v.ndim > 1:
                 # 计算需要压缩的维度：除了最后一个维度(Channel)外的所有维度

@@ -13,6 +13,10 @@ ARTIFACT_VERSION = "formal_verifier_contracts@2026-04-01"
 
 VERIFIED_LABELS = {"match", "uncertain", "mismatch"}
 SAMPLE_TYPES = {"positive", "temporal_shift", "semantic_mismatch"}
+UQ_TYPES = {"heuristic_statistical", "learned_variance_head", "probabilistic_presence_aware"}
+ALIGNMENT_SOURCES = {"fixed", "adaptive_uq", "fallback"}
+NEGATIVE_SAMPLE_TYPES = {"none", "temporal_shift", "semantic_mismatch"}
+FLIP_IMPACT_TYPES = {"beneficial", "harmful", "neutral"}
 
 
 def _is_number(value: Any) -> bool:
@@ -104,10 +108,20 @@ def validate_event_query_record(row: JsonDict) -> Tuple[bool, str]:
 
 
 def validate_pose_uq_record(row: JsonDict) -> Tuple[bool, str]:
-    required = ["frame", "t", "persons", "uq_frame"]
+    required = ["schema_version", "uq_type", "uq_scope", "presence_aware", "variance_head", "frame", "t", "persons", "uq_frame"]
     ok, msg = _require_keys(row, required)
     if not ok:
         return False, msg
+    if not _schema_version_ok(row["schema_version"]):
+        return False, f"schema_version must be '{SCHEMA_VERSION}' or '{SCHEMA_VERSION}+*'"
+    if row["uq_type"] not in UQ_TYPES:
+        return False, f"uq_type must be one of {sorted(UQ_TYPES)}"
+    if not _is_non_empty_str(row["uq_scope"]):
+        return False, "uq_scope must be non-empty string"
+    if not isinstance(row["presence_aware"], bool):
+        return False, "presence_aware must be bool"
+    if not isinstance(row["variance_head"], bool):
+        return False, "variance_head must be bool"
     if not isinstance(row["frame"], int):
         return False, "frame must be int"
     if not _is_number(row["t"]):
@@ -128,6 +142,12 @@ def validate_pose_uq_record(row: JsonDict) -> Tuple[bool, str]:
         for key in ("uq_track", "uq_conf", "uq_motion", "uq_kpt"):
             if not _in_01(person[key]):
                 return False, f"persons[{idx}].{key} must be in [0,1]"
+        if "uq_track_heuristic" in person and not _in_01(person["uq_track_heuristic"]):
+            return False, f"persons[{idx}].uq_track_heuristic must be in [0,1] when present"
+        if "uq_variance" in person and not _in_01(person["uq_variance"]):
+            return False, f"persons[{idx}].uq_variance must be in [0,1] when present"
+        if "sigma2" in person and (not _is_number(person["sigma2"]) or float(person["sigma2"]) < 0.0):
+            return False, f"persons[{idx}].sigma2 must be >= 0 when present"
         if "log_sigma2" in person and not _is_number(person["log_sigma2"]):
             return False, f"persons[{idx}].log_sigma2 must be number when present"
     return True, ""
@@ -149,6 +169,10 @@ def _validate_align_candidate(cand: JsonDict, idx: int) -> Tuple[bool, str]:
     for key in ("overlap", "action_confidence", "uq_track"):
         if not _in_01(cand[key]):
             return False, f"candidates[{idx}].{key} must be in [0,1]"
+    if "uq_variance" in cand and not _in_01(cand["uq_variance"]):
+        return False, f"candidates[{idx}].uq_variance must be in [0,1] when present"
+    if "log_sigma2" in cand and not _is_number(cand["log_sigma2"]):
+        return False, f"candidates[{idx}].log_sigma2 must be number when present"
     return True, ""
 
 
@@ -205,6 +229,10 @@ def validate_align_record(row: JsonDict) -> Tuple[bool, str]:
         return False, "basis_uq must be in [0,1]"
     if not isinstance(row["candidates"], list):
         return False, "candidates must be list"
+    if "alignment_source" in row:
+        source = str(row.get("alignment_source", "")).strip()
+        if source not in ALIGNMENT_SOURCES:
+            return False, f"alignment_source must be one of {sorted(ALIGNMENT_SOURCES)} when present"
     for idx, cand in enumerate(row["candidates"]):
         if not isinstance(cand, dict):
             return False, f"candidates[{idx}] must be object"
@@ -508,6 +536,152 @@ def validate_pipeline_manifest(obj: Any) -> Tuple[bool, str]:
         return False, "artifacts must be object"
     if not isinstance(obj["config_snapshot"], dict):
         return False, "config_snapshot must be object"
+    return True, ""
+
+
+def validate_verifier_training_sample_record(row: JsonDict) -> Tuple[bool, str]:
+    required = [
+        "query_id",
+        "candidate_id",
+        "overlap",
+        "action_confidence",
+        "text_score",
+        "uq_score",
+        "stability_score",
+        "label",
+        "negative_type",
+    ]
+    ok, msg = _require_keys(row, required)
+    if not ok:
+        return False, msg
+    if not _is_non_empty_str(row["query_id"]):
+        return False, "query_id must be non-empty string"
+    if not _is_non_empty_str(row["candidate_id"]):
+        return False, "candidate_id must be non-empty string"
+    for key in ("overlap", "action_confidence", "text_score", "uq_score", "stability_score"):
+        if not _in_01(row[key]):
+            return False, f"{key} must be in [0,1]"
+    label = row["label"]
+    if isinstance(label, str):
+        v = label.strip().lower()
+        if v not in {"match", "mismatch", "1", "0"}:
+            return False, "label string must be one of: match, mismatch, 1, 0"
+    elif isinstance(label, bool):
+        return False, "label must not be bool"
+    elif isinstance(label, (int, float)):
+        if int(label) not in {0, 1}:
+            return False, "label numeric must be 0 or 1"
+    else:
+        return False, "label must be string or number"
+    negative_type = str(row["negative_type"]).strip().lower()
+    if negative_type not in NEGATIVE_SAMPLE_TYPES:
+        return False, f"negative_type must be one of {sorted(NEGATIVE_SAMPLE_TYPES)}"
+    if "split" in row and str(row.get("split", "")).strip().lower() not in {"train", "eval", "test"}:
+        return False, "split must be one of: train, eval, test when present"
+    return True, ""
+
+
+def validate_object_fusion_flip_case(row: JsonDict) -> Tuple[bool, str]:
+    required = [
+        "sample_id",
+        "track_id",
+        "raw_action",
+        "fused_action",
+        "gt_action",
+        "flip_impact",
+        "ambiguity_pair",
+    ]
+    ok, msg = _require_keys(row, required)
+    if not ok:
+        return False, msg
+    if not _is_non_empty_str(row["sample_id"]):
+        return False, "sample_id must be non-empty string"
+    if not isinstance(row["track_id"], int):
+        return False, "track_id must be int"
+    for key in ("raw_action", "fused_action", "gt_action", "ambiguity_pair"):
+        if not _is_non_empty_str(row[key]):
+            return False, f"{key} must be non-empty string"
+    if str(row["flip_impact"]).strip().lower() not in FLIP_IMPACT_TYPES:
+        return False, f"flip_impact must be one of {sorted(FLIP_IMPACT_TYPES)}"
+    if "raw_conf" in row and not _in_01(row["raw_conf"]):
+        return False, "raw_conf must be in [0,1] when present"
+    if "fused_conf" in row and not _in_01(row["fused_conf"]):
+        return False, "fused_conf must be in [0,1] when present"
+    return True, ""
+
+
+def validate_paper_experiment_metrics(obj: Any) -> Tuple[bool, str]:
+    if not isinstance(obj, dict):
+        return False, "metrics must be object"
+    required = ["branch_name", "objective", "data_mode", "metrics", "notes"]
+    ok, msg = _require_keys(obj, required)
+    if not ok:
+        return False, msg
+    if not _is_non_empty_str(obj["branch_name"]):
+        return False, "branch_name must be non-empty string"
+    if not _is_non_empty_str(obj["objective"]):
+        return False, "objective must be non-empty string"
+    if str(obj["data_mode"]) not in {"sample", "real", "mixed"}:
+        return False, "data_mode must be one of: sample, real, mixed"
+    if not isinstance(obj["metrics"], dict):
+        return False, "metrics must be object"
+    for key, value in obj["metrics"].items():
+        if not _is_non_empty_str(str(key)):
+            return False, "metrics keys must be non-empty strings"
+        if isinstance(value, bool):
+            return False, f"metrics.{key} must not be bool"
+        if not isinstance(value, (int, float, str, dict, list)):
+            return False, f"metrics.{key} has unsupported type"
+    if not isinstance(obj["notes"], list):
+        return False, "notes must be list"
+    for idx, note in enumerate(obj["notes"]):
+        if not isinstance(note, str):
+            return False, f"notes[{idx}] must be string"
+    return True, ""
+
+
+def validate_artifacts_manifest(obj: Any) -> Tuple[bool, str]:
+    if not isinstance(obj, dict):
+        return False, "manifest must be object"
+    required = [
+        "schema_version",
+        "artifact_version",
+        "branch_name",
+        "objective",
+        "created_at",
+        "artifacts",
+    ]
+    ok, msg = _require_keys(obj, required)
+    if not ok:
+        return False, msg
+    if not _schema_version_ok(obj["schema_version"]):
+        return False, f"schema_version must be '{SCHEMA_VERSION}' or '{SCHEMA_VERSION}+*'"
+    if not _is_non_empty_str(obj["artifact_version"]):
+        return False, "artifact_version must be non-empty string"
+    if not _is_non_empty_str(obj["branch_name"]):
+        return False, "branch_name must be non-empty string"
+    if not _is_non_empty_str(obj["objective"]):
+        return False, "objective must be non-empty string"
+    if not _is_non_empty_str(obj["created_at"]):
+        return False, "created_at must be non-empty string"
+    if not isinstance(obj["artifacts"], list):
+        return False, "artifacts must be list"
+    for idx, item in enumerate(obj["artifacts"]):
+        if not isinstance(item, dict):
+            return False, f"artifacts[{idx}] must be object"
+        i_ok, i_msg = _require_keys(item, ["name", "path", "exists", "size_bytes", "sha256"])
+        if not i_ok:
+            return False, f"artifacts[{idx}] {i_msg}"
+        if not _is_non_empty_str(item["name"]):
+            return False, f"artifacts[{idx}].name must be non-empty string"
+        if not _is_non_empty_str(item["path"]):
+            return False, f"artifacts[{idx}].path must be non-empty string"
+        if not isinstance(item["exists"], bool):
+            return False, f"artifacts[{idx}].exists must be bool"
+        if not isinstance(item["size_bytes"], int) or item["size_bytes"] < 0:
+            return False, f"artifacts[{idx}].size_bytes must be non-negative int"
+        if not isinstance(item["sha256"], str):
+            return False, f"artifacts[{idx}].sha256 must be string"
     return True, ""
 
 

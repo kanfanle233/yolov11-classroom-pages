@@ -87,6 +87,21 @@ def _extract_conf_from_boxes(frame_obj: Any) -> List[float]:
     if not isinstance(frame_obj, dict):
         return confs
 
+    # Formal pipeline pose jsonl: frame-level {"persons":[{"conf":...,"bbox":...}, ...], ...}
+    persons = frame_obj.get("persons")
+    if isinstance(persons, list) and persons:
+        for person in persons:
+            if not isinstance(person, dict):
+                continue
+            c = person.get("conf", person.get("score", person.get("confidence")))
+            if c is None:
+                continue
+            try:
+                confs.append(float(c))
+            except Exception:
+                pass
+        return confs
+
     boxes = None
     if "boxes" in frame_obj and isinstance(frame_obj["boxes"], list):
         boxes = frame_obj["boxes"]
@@ -114,6 +129,9 @@ def _extract_conf_from_boxes(frame_obj: Any) -> List[float]:
 def _count_boxes(frame_obj: Any) -> int:
     if not isinstance(frame_obj, dict):
         return 0
+    persons = frame_obj.get("persons")
+    if isinstance(persons, list):
+        return sum(1 for p in persons if isinstance(p, dict))
     if "boxes" in frame_obj and isinstance(frame_obj["boxes"], list):
         return len(frame_obj["boxes"])
     if "pred" in frame_obj and isinstance(frame_obj["pred"], dict):
@@ -198,9 +216,25 @@ def summarize_case(
                 tid = rec["pred"].get("track_id")
             if tid is not None:
                 try:
-                    track_ids.add(int(tid))
+                    tid_int = int(tid)
+                    if tid_int >= 0:
+                        track_ids.add(tid_int)
                 except Exception:
                     pass
+            # Formal pipeline pose jsonl uses persons[].track_id.
+            if isinstance(rec.get("persons"), list):
+                for person in rec["persons"]:
+                    if not isinstance(person, dict):
+                        continue
+                    tid2 = person.get("track_id")
+                    if tid2 is None:
+                        continue
+                    try:
+                        tid2_int = int(tid2)
+                        if tid2_int >= 0:
+                            track_ids.add(tid2_int)
+                    except Exception:
+                        pass
 
             fi = _get_frame_idx(rec)
             if fi is not None:
@@ -289,95 +323,15 @@ def _pick_prefix_from_case_dir(case_dir: Path, case_id: Optional[str]) -> Option
     if case_id:
         return case_id
 
-    jsonls = [p for p in case_dir.glob("*.jsonl") if "behavior" not in p.name.lower()]
-    if jsonls:
-        return sorted(jsonls, key=lambda x: x.stat().st_size, reverse=True)[0].stem
-
-    metas = list(case_dir.glob("*.meta.json"))
-    if metas:
-        return sorted(metas, key=lambda x: x.stat().st_size, reverse=True)[0].stem.replace(".meta", "")
-
-    return None
-
-
-def _pick_prefix_from_case_dir(case_dir: Path, case_id: Optional[str]) -> Optional[str]:
-    if case_id:
-        return case_id
-
-    jsonls = [p for p in case_dir.glob("*.jsonl") if "behavior" not in p.name.lower()]
-    if jsonls:
-        return sorted(jsonls, key=lambda x: x.stat().st_size, reverse=True)[0].stem
-
-    metas = list(case_dir.glob("*.meta.json"))
-    if metas:
-        return sorted(metas, key=lambda x: x.stat().st_size, reverse=True)[0].stem.replace(".meta", "")
-
-    return None
-
-
-def _pick_prefix_from_case_dir(case_dir: Path, case_id: Optional[str]) -> Optional[str]:
-    if case_id:
-        return case_id
-
-    jsonls = [p for p in case_dir.glob("*.jsonl") if "behavior" not in p.name.lower()]
-    if jsonls:
-        return sorted(jsonls, key=lambda x: x.stat().st_size, reverse=True)[0].stem
-
-    metas = list(case_dir.glob("*.meta.json"))
-    if metas:
-        return sorted(metas, key=lambda x: x.stat().st_size, reverse=True)[0].stem.replace(".meta", "")
-
-    return None
-
-
-def _pick_prefix_from_case_dir(case_dir: Path, case_id: Optional[str]) -> Optional[str]:
-    if case_id:
-        return case_id
-
-    jsonls = [p for p in case_dir.glob("*.jsonl") if "behavior" not in p.name.lower()]
-    if jsonls:
-        return sorted(jsonls, key=lambda x: x.stat().st_size, reverse=True)[0].stem
-
-    metas = list(case_dir.glob("*.meta.json"))
-    if metas:
-        return sorted(metas, key=lambda x: x.stat().st_size, reverse=True)[0].stem.replace(".meta", "")
-
-    return None
-
-
-def _pick_prefix_from_case_dir(case_dir: Path, case_id: Optional[str]) -> Optional[str]:
-    if case_id:
-        return case_id
-
-    jsonls = [p for p in case_dir.glob("*.jsonl") if "behavior" not in p.name.lower()]
-    if jsonls:
-        return sorted(jsonls, key=lambda x: x.stat().st_size, reverse=True)[0].stem
-
-    metas = list(case_dir.glob("*.meta.json"))
-    if metas:
-        return sorted(metas, key=lambda x: x.stat().st_size, reverse=True)[0].stem.replace(".meta", "")
-
-    return None
-
-
-def _pick_prefix_from_case_dir(case_dir: Path, case_id: Optional[str]) -> Optional[str]:
-    if case_id:
-        return case_id
-
-    jsonls = [p for p in case_dir.glob("*.jsonl") if "behavior" not in p.name.lower()]
-    if jsonls:
-        return sorted(jsonls, key=lambda x: x.stat().st_size, reverse=True)[0].stem
-
-    metas = list(case_dir.glob("*.meta.json"))
-    if metas:
-        return sorted(metas, key=lambda x: x.stat().st_size, reverse=True)[0].stem.replace(".meta", "")
-
-    return None
-
-
-def _pick_prefix_from_case_dir(case_dir: Path, case_id: Optional[str]) -> Optional[str]:
-    if case_id:
-        return case_id
+    # Prefer formal-contract artifacts when present, so we don't accidentally summarize UQ-only jsonl.
+    preferred = [
+        case_dir / "pose_tracks_smooth.jsonl",
+        case_dir / "pose_keypoints_v2.jsonl",
+        case_dir / "case_det.jsonl",
+    ]
+    for p in preferred:
+        if p.exists():
+            return p.stem
 
     jsonls = [p for p in case_dir.glob("*.jsonl") if "behavior" not in p.name.lower()]
     if jsonls:

@@ -52,6 +52,10 @@ def action_match_score(event_type: str, query_text: str, action_label: str) -> f
     return _clamp01(max(best_alias, lexical))
 
 
+def rule_text_score(event_type: str, query_text: str, action_label: str) -> float:
+    return action_match_score(event_type, query_text, action_label)
+
+
 def build_feature_vector(
     *,
     event_type: str,
@@ -68,6 +72,24 @@ def build_feature_vector(
     stability_score = _clamp01(1.0 - uq_score)
     # Fixed 4-dim feature for compact verifier model.
     return [overlap, action_confidence, text_score, stability_score]
+
+
+def build_feature_vector_from_scores(
+    *,
+    overlap: float,
+    action_confidence: float,
+    text_score: float,
+    uq_score: float = 0.5,
+    stability_score: float = -1.0,
+) -> List[float]:
+    overlap = _clamp01(overlap)
+    action_confidence = _clamp01(action_confidence)
+    text_score = _clamp01(text_score)
+    if stability_score >= 0.0:
+        stability = _clamp01(stability_score)
+    else:
+        stability = _clamp01(1.0 - _clamp01(uq_score))
+    return [overlap, action_confidence, text_score, stability]
 
 
 class VerifierMLP(nn.Module):

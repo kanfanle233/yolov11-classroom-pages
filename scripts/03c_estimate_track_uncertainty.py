@@ -3,11 +3,12 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from contracts.schemas import SCHEMA_VERSION, validate_jsonl_file, validate_pose_uq_record
+from verifier.variance_head import predict_variance_index
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -80,6 +81,15 @@ def _bbox_stability(prev_bbox: List[Any], cur_bbox: List[Any]) -> float:
     return _clamp01(1.0 - instability)
 
 
+def _resolve_optional_path(base_dir: Path, raw: str) -> Optional[Path]:
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = (base_dir / path).resolve()
+    return path
+
+
 def main() -> None:
     base_dir = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Estimate track uncertainty and export fixed UQ schema.")
@@ -94,6 +104,13 @@ def main() -> None:
     parser.add_argument("--out", dest="out_path", required=True, type=str, help="pose_tracks_smooth_uq.jsonl")
     parser.add_argument("--fps", type=float, default=25.0)
     parser.add_argument("--validate", type=int, default=1, help="1=validate output schema")
+    parser.add_argument("--variance_model", default="", type=str, help="optional learned variance head checkpoint")
+    parser.add_argument(
+        "--variance_weight",
+        default=0.35,
+        type=float,
+        help="blend weight for learned variance head when provided",
+    )
     args = parser.parse_args()
 
     in_path = Path(args.in_path)
@@ -104,6 +121,18 @@ def main() -> None:
         out_path = (base_dir / out_path).resolve()
     if not in_path.exists():
         raise FileNotFoundError(f"pose tracks not found: {in_path}")
+
+    variance_model_path = _resolve_optional_path(base_dir, str(args.variance_model))
+    variance_index: Dict[Tuple[int, int], Dict[str, float]] = {}
+    variance_meta: Dict[str, Any] = {}
+    if variance_model_path is not None and variance_model_path.exists():
+        variance_index, variance_meta = predict_variance_index(in_path, variance_model_path)
+        print(
+            f"[INFO] variance head loaded: {variance_model_path} "
+            f"(predictions={len(variance_index)})"
+        )
+    variance_weight = _clamp01(float(args.variance_weight))
+    use_variance_head = bool(variance_index)
 
     prev_kpts: Dict[int, List[Dict[str, Any]]] = {}
     prev_bbox: Dict[int, List[Any]] = {}
@@ -139,7 +168,7 @@ def main() -> None:
                 bbox_stability = _bbox_stability(prev_bbox.get(track_id, []), bbox)
 
                 # UQ score: larger when visibility is low or motion/bbox are unstable.
-                uq_score = _clamp01(
+                heuristic_uq = _clamp01(
                     0.45 * (1.0 - visible_ratio)
                     + 0.35 * (1.0 - motion_stability)
                     + 0.20 * (1.0 - bbox_stability)
@@ -155,17 +184,32 @@ def main() -> None:
                 if not uq_source:
                     uq_source.append("stable")
 
+                variance_pred = variance_index.get((frame_idx, track_id))
+                if variance_pred is not None:
+                    uq_variance = _clamp01(_safe_float(variance_pred.get("uq_variance", heuristic_uq), heuristic_uq))
+                    sigma2 = max(1e-6, _safe_float(variance_pred.get("sigma2", heuristic_uq + 1e-4), heuristic_uq + 1e-4))
+                    log_sigma2 = _safe_float(variance_pred.get("log_sigma2", math.log(sigma2)), math.log(sigma2))
+                    uq_track = _clamp01((1.0 - variance_weight) * heuristic_uq + variance_weight * uq_variance)
+                    uq_source.append("variance_head")
+                else:
+                    uq_variance = heuristic_uq
+                    sigma2 = max(1e-6, heuristic_uq + 1e-4)
+                    log_sigma2 = math.log(sigma2)
+                    uq_track = heuristic_uq
+
                 person_out.append(
                     {
                         "track_id": int(track_id),
-                        "uq_track": round(uq_score, 6),
+                        "uq_track": round(uq_track, 6),
                         "uq_conf": round(1.0 - visible_ratio, 6),
                         "uq_motion": round(1.0 - motion_stability, 6),
                         "uq_kpt": round(1.0 - bbox_stability, 6),
-                        # Reserved output for later learned UQ heads.
-                        "log_sigma2": round(math.log(max(1e-6, uq_score + 1e-4)), 6),
+                        "uq_track_heuristic": round(heuristic_uq, 6),
+                        "uq_variance": round(uq_variance, 6),
+                        "sigma2": round(sigma2, 8),
+                        "log_sigma2": round(log_sigma2, 6),
                         # Compatibility fields (legacy reader support).
-                        "uq_score": round(uq_score, 6),
+                        "uq_score": round(uq_track, 6),
                         "uq_source": uq_source,
                         "visible_kpt_ratio": round(visible_ratio, 6),
                         "motion_stability": round(motion_stability, 6),
@@ -181,10 +225,12 @@ def main() -> None:
             uq_frame = sum(float(p["uq_track"]) for p in person_out) / len(person_out)
             out_row = {
                 "schema_version": SCHEMA_VERSION,
-                "uq_type": "heuristic_statistical",
+                "uq_type": "learned_variance_head" if use_variance_head else "heuristic_statistical",
                 "uq_scope": "track_sequence",
                 "presence_aware": False,
-                "variance_head": False,
+                "variance_head": bool(use_variance_head),
+                "variance_model_version": str(variance_meta.get("version", "")) if use_variance_head else "",
+                "variance_target": str(variance_meta.get("target", "")) if use_variance_head else "",
                 "frame": frame_idx,
                 "t": round(t_sec, 6),
                 "uq_frame": round(uq_frame, 6),

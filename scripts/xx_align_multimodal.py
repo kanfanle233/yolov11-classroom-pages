@@ -67,7 +67,7 @@ def _normalize_actions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _build_uq_index(rows: List[Dict[str, Any]]) -> Dict[int, Dict[int, Dict[str, float]]]:
     """
     Build per-frame per-track map:
-      frame_idx -> track_id -> {"uq_score":..., "motion_stability":...}
+      frame_idx -> track_id -> {"uq_score":..., "motion_stability":..., "uq_variance":..., "log_sigma2":...}
     """
     out: Dict[int, Dict[int, Dict[str, float]]] = {}
     for row in rows:
@@ -83,9 +83,13 @@ def _build_uq_index(rows: List[Dict[str, Any]]) -> Dict[int, Dict[int, Dict[str,
                 uq_track = _safe_float(person.get("uq_track", person.get("uq_score", 0.5)), 0.5)
                 uq_motion = _safe_float(person.get("uq_motion", 0.5), 0.5)
                 motion_stability = _safe_float(person.get("motion_stability", 1.0 - uq_motion), 1.0 - uq_motion)
+                uq_variance = _safe_float(person.get("uq_variance", uq_track), uq_track)
+                log_sigma2 = _safe_float(person.get("log_sigma2", 0.0), 0.0)
                 out.setdefault(frame_idx, {})[track_id] = {
                     "uq_score": uq_track,
                     "motion_stability": motion_stability,
+                    "uq_variance": uq_variance,
+                    "log_sigma2": log_sigma2,
                 }
             continue
 
@@ -97,30 +101,54 @@ def _build_uq_index(rows: List[Dict[str, Any]]) -> Dict[int, Dict[int, Dict[str,
         out.setdefault(frame_idx, {})[track_id] = {
             "uq_score": _safe_float(row.get("uq_score", row.get("uq_track", 0.5)), 0.5),
             "motion_stability": _safe_float(row.get("motion_stability", 0.5), 0.5),
+            "uq_variance": _safe_float(row.get("uq_variance", row.get("uq_score", row.get("uq_track", 0.5))), 0.5),
+            "log_sigma2": _safe_float(row.get("log_sigma2", 0.0), 0.0),
         }
     return out
 
 
-def _mean_uq_near(uq_index: Dict[int, Dict[int, Dict[str, float]]], t: float, fps: float, radius_sec: float = 1.0) -> Tuple[float, float, Dict[int, float]]:
+def _mean_uq_near(
+    uq_index: Dict[int, Dict[int, Dict[str, float]]],
+    t: float,
+    fps: float,
+    radius_sec: float = 1.0,
+) -> Tuple[float, float, Dict[int, Dict[str, float]]]:
     center_frame = int(round(t * fps))
     radius = max(1, int(round(radius_sec * fps)))
     frames = range(max(0, center_frame - radius), center_frame + radius + 1)
     uq_vals: List[float] = []
     motion_vals: List[float] = []
-    by_track: Dict[int, List[float]] = {}
+    by_track_uq: Dict[int, List[float]] = {}
+    by_track_var: Dict[int, List[float]] = {}
+    by_track_log_sigma2: Dict[int, List[float]] = {}
 
     for fr in frames:
         row = uq_index.get(fr, {})
         for tid, values in row.items():
             uq = _safe_float(values.get("uq_score", 0.5), 0.5)
             motion_stability = _safe_float(values.get("motion_stability", 0.5), 0.5)
+            uq_variance = _safe_float(values.get("uq_variance", uq), uq)
+            log_sigma2 = _safe_float(values.get("log_sigma2", 0.0), 0.0)
             uq_vals.append(uq)
             motion_vals.append(1.0 - motion_stability)
-            by_track.setdefault(tid, []).append(uq)
+            by_track_uq.setdefault(tid, []).append(uq)
+            by_track_var.setdefault(tid, []).append(uq_variance)
+            by_track_log_sigma2.setdefault(tid, []).append(log_sigma2)
 
     uq_mean = sum(uq_vals) / len(uq_vals) if uq_vals else 0.0
     motion_mean = sum(motion_vals) / len(motion_vals) if motion_vals else 0.0
-    track_uq = {tid: (sum(vals) / len(vals) if vals else uq_mean) for tid, vals in by_track.items()}
+    track_uq = {
+        tid: {
+            "uq_track": (sum(by_track_uq.get(tid, [])) / len(by_track_uq[tid])) if by_track_uq.get(tid) else uq_mean,
+            "uq_variance": (sum(by_track_var.get(tid, [])) / len(by_track_var[tid])) if by_track_var.get(tid) else uq_mean,
+            "log_sigma2": (
+                sum(by_track_log_sigma2.get(tid, [])) / len(by_track_log_sigma2[tid])
+                if by_track_log_sigma2.get(tid)
+                else 0.0
+            ),
+        }
+        for tid in by_track_uq
+    }
     return uq_mean, motion_mean, track_uq
 
 
@@ -130,6 +158,42 @@ def _interval_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
         return 0.0
     denom = max(1e-6, min(a1 - a0, b1 - b0))
     return inter / denom
+
+
+def _collect_candidates(
+    *,
+    actions: List[Dict[str, Any]],
+    track_uq: Dict[int, Dict[str, float]],
+    uq_basis: float,
+    w_start: float,
+    w_end: float,
+    topk: int,
+) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for a in actions:
+        ov = _interval_overlap(w_start, w_end, a["start_time"], a["end_time"])
+        if ov <= 0:
+            continue
+        tid = int(a["track_id"])
+        track_meta = track_uq.get(tid, {})
+        cand_uq = float(track_meta.get("uq_track", uq_basis))
+        candidates.append(
+            {
+                "track_id": tid,
+                "action": a["action"],
+                "start_time": round(a["start_time"], 3),
+                "end_time": round(a["end_time"], 3),
+                "overlap": round(float(ov), 6),
+                "action_confidence": round(float(a["action_confidence"]), 6),
+                "uq_track": round(cand_uq, 6),
+                "uq_variance": round(float(track_meta.get("uq_variance", cand_uq)), 6),
+                "log_sigma2": round(float(track_meta.get("log_sigma2", 0.0)), 6),
+                # Compatibility alias.
+                "uq_score": round(cand_uq, 6),
+            }
+        )
+    candidates.sort(key=lambda c: (c["overlap"], c["action_confidence"]), reverse=True)
+    return candidates[: max(1, int(topk))]
 
 
 def main() -> None:
@@ -145,6 +209,11 @@ def main() -> None:
     parser.add_argument("--beta_uq", type=float, default=0.8)
     parser.add_argument("--min_window", type=float, default=0.6)
     parser.add_argument("--max_window", type=float, default=4.0)
+    parser.add_argument("--alignment_mode", choices=["adaptive_uq", "fixed"], default="adaptive_uq")
+    parser.add_argument("--fixed_window", type=float, default=1.0)
+    parser.add_argument("--enable_fallback", type=int, default=1, help="only used in adaptive_uq mode")
+    parser.add_argument("--fallback_window", type=float, default=1.0, help="fallback fixed window size in seconds")
+    parser.add_argument("--query_time_offset", type=float, default=0.0, help="global shift applied to query timestamps")
     parser.add_argument("--topk", type=int, default=8)
     args = parser.parse_args()
 
@@ -170,44 +239,63 @@ def main() -> None:
         event_id = str(q.get("event_id", q.get("query_id", "")))
         event_type = str(q.get("event_type", "unknown"))
         query_text = str(q.get("query_text", ""))
-        t_center = _safe_float(q.get("timestamp", q.get("t_center", q.get("start", 0.0))), 0.0)
+        t_center = _safe_float(q.get("timestamp", q.get("t_center", q.get("start", 0.0))), 0.0) + float(
+            args.query_time_offset
+        )
 
         uq_basis, motion_basis, track_uq = _mean_uq_near(uq_index, t=t_center, fps=float(args.fps), radius_sec=1.0)
-        window_size = _clamp(
-            float(args.base_window) + float(args.alpha_motion) * motion_basis + float(args.beta_uq) * uq_basis,
-            float(args.min_window),
-            float(args.max_window),
-        )
+        if args.alignment_mode == "fixed":
+            window_size = _clamp(float(args.fixed_window), float(args.min_window), float(args.max_window))
+            alignment_source = "fixed"
+        else:
+            window_size = _clamp(
+                float(args.base_window) + float(args.alpha_motion) * motion_basis + float(args.beta_uq) * uq_basis,
+                float(args.min_window),
+                float(args.max_window),
+            )
+            alignment_source = "adaptive_uq"
+
         w_start = max(0.0, t_center - window_size)
         w_end = t_center + window_size
+        candidates = _collect_candidates(
+            actions=actions,
+            track_uq=track_uq,
+            uq_basis=uq_basis,
+            w_start=w_start,
+            w_end=w_end,
+            topk=int(args.topk),
+        )
+        fallback_used = False
 
-        candidates: List[Dict[str, Any]] = []
-        for a in actions:
-            ov = _interval_overlap(w_start, w_end, a["start_time"], a["end_time"])
-            if ov <= 0:
-                continue
-            tid = int(a["track_id"])
-            candidates.append(
-                {
-                    "track_id": tid,
-                    "action": a["action"],
-                    "start_time": round(a["start_time"], 3),
-                    "end_time": round(a["end_time"], 3),
-                    "overlap": round(float(ov), 6),
-                    "action_confidence": round(float(a["action_confidence"]), 6),
-                    "uq_track": round(float(track_uq.get(tid, uq_basis)), 6),
-                    # Compatibility alias.
-                    "uq_score": round(float(track_uq.get(tid, uq_basis)), 6),
-                }
+        if (
+            args.alignment_mode == "adaptive_uq"
+            and int(args.enable_fallback) == 1
+            and len(candidates) == 0
+            and len(actions) > 0
+        ):
+            fallback_size = _clamp(float(args.fallback_window), float(args.min_window), float(args.max_window))
+            w_start = max(0.0, t_center - fallback_size)
+            w_end = t_center + fallback_size
+            candidates = _collect_candidates(
+                actions=actions,
+                track_uq=track_uq,
+                uq_basis=uq_basis,
+                w_start=w_start,
+                w_end=w_end,
+                topk=int(args.topk),
             )
-        candidates.sort(key=lambda c: (c["overlap"], c["action_confidence"]), reverse=True)
-        candidates = candidates[: max(1, int(args.topk))]
+            window_size = fallback_size
+            alignment_source = "fallback"
+            fallback_used = True
 
         row = {
             "event_id": event_id,
             "query_id": event_id,
             "event_type": event_type,
             "query_text": query_text,
+            "alignment_source": alignment_source,
+            "alignment_mode": str(args.alignment_mode),
+            "fallback_used": bool(fallback_used),
             "window_start": round(w_start, 3),
             "window_end": round(w_end, 3),
             "window_center": round(t_center, 3),

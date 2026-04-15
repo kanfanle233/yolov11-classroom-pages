@@ -19,6 +19,8 @@ FORMAL_KEEP = {
     "event_queries.jsonl",
     "per_person_sequences.json",
     "pipeline_manifest.json",
+    "variance_head.pt",
+    "variance_head_report.json",
     "pose_keypoints_v2.jsonl",
     "pose_tracks_smooth.jsonl",
     "pose_tracks_smooth_uq.jsonl",
@@ -108,13 +110,22 @@ def cleanup_legacy_outputs(case_dir: Path) -> List[Path]:
     return removed
 
 
-def write_manifest(case_dir: Path, py_exe: str, cleanup_legacy: bool, rerun_uq: bool) -> None:
+def write_manifest(
+    case_dir: Path,
+    py_exe: str,
+    cleanup_legacy: bool,
+    rerun_uq: bool,
+    train_variance_head: bool,
+    variance_weight: float,
+) -> None:
     artifact_map = {
         "actions": "actions.jsonl",
         "align_multimodal": "align_multimodal.json",
         "event_queries": "event_queries.jsonl",
         "per_person_sequences": "per_person_sequences.json",
         "pipeline_manifest": "pipeline_manifest.json",
+        "variance_model": "variance_head.pt",
+        "variance_report": "variance_head_report.json",
         "pose_keypoints": "pose_keypoints_v2.jsonl",
         "pose_tracks_smooth": "pose_tracks_smooth.jsonl",
         "pose_tracks_smooth_uq": "pose_tracks_smooth_uq.jsonl",
@@ -142,6 +153,8 @@ def write_manifest(case_dir: Path, py_exe: str, cleanup_legacy: bool, rerun_uq: 
             "refresh_existing_case": True,
             "cleanup_legacy": bool(cleanup_legacy),
             "rerun_uq": bool(rerun_uq),
+            "train_variance_head": bool(train_variance_head),
+            "variance_weight": float(variance_weight),
             "python_interpreter": py_exe,
             "generated_by": "scripts/09c_refresh_case_outputs.py",
         },
@@ -149,11 +162,21 @@ def write_manifest(case_dir: Path, py_exe: str, cleanup_legacy: bool, rerun_uq: 
     (case_dir / "pipeline_manifest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def refresh_case(case_dir: Path, py_exe: str, cleanup_legacy: bool, rerun_uq: bool) -> None:
+def refresh_case(
+    case_dir: Path,
+    py_exe: str,
+    cleanup_legacy: bool,
+    rerun_uq: bool,
+    train_variance_head: bool,
+    variance_model_arg: str,
+    variance_weight: float,
+) -> None:
     transcript = case_dir / "transcript.jsonl"
     actions = case_dir / "actions.jsonl"
     pose_tracks = case_dir / "pose_tracks_smooth.jsonl"
     pose_uq = case_dir / "pose_tracks_smooth_uq.jsonl"
+    variance_model = Path(variance_model_arg).resolve() if variance_model_arg else (case_dir / "variance_head.pt")
+    variance_report = case_dir / "variance_head_report.json"
     event_queries = case_dir / "event_queries.jsonl"
     aligned = case_dir / "align_multimodal.json"
     verified = case_dir / "verified_events.jsonl"
@@ -169,11 +192,28 @@ def refresh_case(case_dir: Path, py_exe: str, cleanup_legacy: bool, rerun_uq: bo
         removed = cleanup_legacy_outputs(case_dir)
         print(f"[CLEAN] {case_dir} removed={len(removed)}")
 
+    if train_variance_head and pose_tracks.exists():
+        run_step(
+            py_exe,
+            PROJECT_ROOT / "scripts" / "03d_train_track_variance_head.py",
+            [
+                "--pose_tracks",
+                str(pose_tracks),
+                "--out_model",
+                str(variance_model),
+                "--out_report",
+                str(variance_report),
+            ],
+        )
+
     if rerun_uq and pose_tracks.exists():
+        uq_args = ["--in", str(pose_tracks), "--out", str(pose_uq), "--validate", "1", "--variance_weight", str(float(variance_weight))]
+        if variance_model.exists():
+            uq_args.extend(["--variance_model", str(variance_model)])
         run_step(
             py_exe,
             PROJECT_ROOT / "scripts" / "03c_estimate_track_uncertainty.py",
-            ["--in", str(pose_tracks), "--out", str(pose_uq), "--validate", "1"],
+            uq_args,
         )
 
     run_step(
@@ -247,7 +287,14 @@ def refresh_case(case_dir: Path, py_exe: str, cleanup_legacy: bool, rerun_uq: bo
         PROJECT_ROOT / "scripts" / "10_visualize_timeline.py",
         ["--src", str(per_person), "--verified_src", str(verified), "--out", str(timeline_png)],
     )
-    write_manifest(case_dir, py_exe, cleanup_legacy=cleanup_legacy, rerun_uq=rerun_uq)
+    write_manifest(
+        case_dir,
+        py_exe,
+        cleanup_legacy=cleanup_legacy,
+        rerun_uq=rerun_uq,
+        train_variance_head=train_variance_head,
+        variance_weight=float(variance_weight),
+    )
     print(f"[DONE] refreshed {case_dir}")
 
 
@@ -257,6 +304,9 @@ def main() -> None:
     parser.add_argument("--py", default=sys.executable, type=str)
     parser.add_argument("--cleanup_legacy", default=1, type=int)
     parser.add_argument("--rerun_uq", default=1, type=int)
+    parser.add_argument("--train_variance_head", default=0, type=int)
+    parser.add_argument("--variance_model", default="", type=str)
+    parser.add_argument("--variance_weight", default=0.35, type=float)
     args = parser.parse_args()
 
     case_dirs = iter_case_dirs(args.case_dir)
@@ -269,6 +319,9 @@ def main() -> None:
             py_exe=str(args.py),
             cleanup_legacy=bool(int(args.cleanup_legacy)),
             rerun_uq=bool(int(args.rerun_uq)),
+            train_variance_head=bool(int(args.train_variance_head)),
+            variance_model_arg=str(args.variance_model),
+            variance_weight=float(args.variance_weight),
         )
 
 

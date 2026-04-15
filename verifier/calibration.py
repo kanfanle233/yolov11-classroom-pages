@@ -159,6 +159,7 @@ def main() -> None:
 
     before_ece, before_bins = ece_and_bins(probs, targets, num_bins=int(args.num_bins))
     before_brier = brier_score(probs, targets)
+    reference_quality = "weak_self_labels" if set(ref_source_counts.keys()) == {"self_label_fallback"} else "explicit_or_external_labels"
 
     use_scaling = int(args.disable_temperature_scaling) != 1
     if use_scaling:
@@ -196,6 +197,18 @@ def main() -> None:
             "num_bins": int(args.num_bins),
             "source_file": str(verified_path),
             "reference_source": ref_source_counts,
+            "reference_quality": reference_quality,
+        },
+        "summary": {
+            "num_samples": int(len(rows)),
+            "ece_delta": float(after_ece - before_ece),
+            "brier_delta": float(after_brier - before_brier),
+            "reliability_diagram": str(diagram_out) if diagram_out is not None else "",
+            "warning": (
+                "calibration is estimated from self_label_fallback and should be replaced by held-out labels for paper claims"
+                if reference_quality == "weak_self_labels"
+                else ""
+            ),
         },
         "artifact_version": ARTIFACT_VERSION,
     }
@@ -213,6 +226,8 @@ def main() -> None:
         f"[INFO] total={len(rows)} ece_before={before_ece:.4f} ece_after={after_ece:.4f} "
         f"brier_before={before_brier:.4f} brier_after={after_brier:.4f} T={temperature:.3f}"
     )
+    if reference_quality == "weak_self_labels":
+        print("[WARN] calibration used self_label_fallback; use held-out labels before treating ECE/Brier as paper evidence")
 
 
 if __name__ == "__main__":

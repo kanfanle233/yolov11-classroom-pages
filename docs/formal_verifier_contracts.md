@@ -28,6 +28,11 @@ Required fields:
 One frame-level JSON object per line.
 
 Required fields:
+- `schema_version` `str`
+- `uq_type` `str`: `heuristic_statistical | learned_variance_head | probabilistic_presence_aware`
+- `uq_scope` `str`
+- `presence_aware` `bool`
+- `variance_head` `bool`
 - `frame` `int`: frame index
 - `t` `float`: seconds
 - `persons` `list[object]`: track UQ list
@@ -39,11 +44,17 @@ Required per `persons[]`:
 - `uq_conf` `float[0,1]`
 - `uq_motion` `float[0,1]`
 - `uq_kpt` `float[0,1]`
-- `log_sigma2` `float` (optional, reserved)
+- `log_sigma2` `float`
+
+Optional per `persons[]`:
+- `uq_track_heuristic` `float[0,1]`: heuristic baseline before learned blending
+- `uq_variance` `float[0,1]`: variance-head-derived uncertainty
+- `sigma2` `float >= 0`: scalar variance estimate
 
 Current iteration note:
-- The shipped `03c_estimate_track_uncertainty.py` implementation is `heuristic_statistical`, not a learned variance head.
-- `log_sigma2` is currently a reserved proxy field derived from heuristic UQ and must not be described as RTMO/ProbPose-style probabilistic pose output.
+- Default mode is `heuristic_statistical`.
+- When `--variance_model` is provided, `03c_estimate_track_uncertainty.py` switches to `learned_variance_head` and blends heuristic UQ with a minimal learned scalar variance head trained on pseudo temporal residuals.
+- This is still not RTMO/ProbPose-style probabilistic pose output. It is a lightweight sequence-level variance head, not a YOLO pose-head rewrite.
 - Presence probability / out-of-window probability / visibility branches are not part of the current contract.
 
 ## 3) `align_multimodal.json`
@@ -69,6 +80,8 @@ Recommended per `candidates[]`:
 - `overlap` `float[0,1]`
 - `action_confidence` `float[0,1]`
 - `uq_track` `float[0,1]`
+- `uq_variance` `float[0,1]`
+- `log_sigma2` `float`
 
 ## 4) `verifier_samples_train.jsonl`
 One training sample per line.
@@ -120,6 +133,8 @@ Required fields:
 - `precision` `float[0,1]`
 - `recall` `float[0,1]`
 - `f1` `float[0,1]`
+- `accuracy` `float[0,1]`
+- `macro_f1` `float[0,1]`
 
 `confusion_matrix` must include:
 - `labels` `list[str]`
@@ -138,6 +153,10 @@ Required fields:
 
 Supporting artifact:
 - `verifier_reliability_diagram.svg`: optional visualization exported from the same calibration run.
+
+Supporting files for learned variance head:
+- `variance_head.pt`: optional minimal scalar variance head checkpoint
+- `variance_head_report.json`: training summary for the variance head
 
 
 ## 8) `pipeline_manifest.json`

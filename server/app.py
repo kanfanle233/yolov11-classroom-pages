@@ -60,6 +60,7 @@ if not TEMPLATE_DIR.exists():
 STATIC_DIR = (PROJECT_ROOT / "web_viz" / "static")
 if not STATIC_DIR.exists():
     STATIC_DIR = PROJECT_ROOT
+DOCS_DIR = (PROJECT_ROOT / "docs").resolve()
 
 app = FastAPI(title="Classroom Multi-Modal Viz Server")
 
@@ -91,6 +92,10 @@ if VIDEO_DIR.exists():
 # 闈欐€佽祫婧?
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Paper pages demo (GitHub Pages-equivalent local serving)
+if DOCS_DIR.exists():
+    app.mount("/docs", StaticFiles(directory=str(DOCS_DIR), html=True), name="docs")
 
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 

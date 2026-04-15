@@ -4,17 +4,7 @@ import cv2
 import argparse
 from pathlib import Path
 from ultralytics import YOLO
-
-CLASSROOM_ALIASES = {
-    "cell phone": "phone",
-    "mobile phone": "phone",
-    "book": "book",
-    "textbook": "book",
-    "pen": "pen",
-    "pencil": "pen",
-    "notebook": "notebook",
-    "laptop": "laptop",
-}
+from object_evidence_mapping import load_object_evidence_config, normalize_object_name
 
 
 def safe_mkdir(p: Path):
@@ -37,11 +27,6 @@ def parse_classes(s: str):
     return out
 
 
-def normalize_name(name: str) -> str:
-    raw = (name or "").strip().lower()
-    return CLASSROOM_ALIASES.get(raw, raw)
-
-
 def main():
     base_dir = Path(__file__).resolve().parents[1]
 
@@ -62,6 +47,12 @@ def main():
                         help="comma-separated class ids to keep, e.g. '67,73,63'. default excludes person.")
     parser.add_argument("--class_name_map", type=str, default="",
                         help="optional JSON path mapping class_id->class_name (for custom classroom detector)")
+    parser.add_argument(
+        "--mapping_config",
+        type=str,
+        default="contracts/object_evidence_mapping.json",
+        help="centralized object alias mapping json",
+    )
 
     # 鉁?杈撳嚭涓€涓?demo 瑙嗛锛堝儚01涓€鏍凤級锛屾柟渚胯倝鐪奸獙璇?
     parser.add_argument("--out_video", type=str, default="", help="optional: output demo video with boxes")
@@ -77,6 +68,11 @@ def main():
 
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
+
+    mapping_config = Path(args.mapping_config)
+    if not mapping_config.is_absolute():
+        mapping_config = (base_dir / mapping_config).resolve()
+    object_aliases, _ = load_object_evidence_config(mapping_config)
 
     # 鉁?妯″瀷璺緞锛氬厑璁镐綘浼犵浉瀵硅矾寰勶紙椤圭洰鏍圭洰褰曚笅锛?
     model_path = Path(args.model)
@@ -119,6 +115,7 @@ def main():
     print(f"[INFO] model   = {model_ref}")
     print(f"[INFO] conf/iou = {args.conf}/{args.iou}, imgsz={args.imgsz}, stride={args.stride}")
     print(f"[INFO] classes = {keep_classes} -> {[names[c] for c in keep_classes] if keep_classes else 'ALL'}")
+    print(f"[INFO] mapping = {mapping_config}")
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -170,7 +167,7 @@ def main():
                         cls_id = int(b.cls[0])
                         x1, y1, x2, y2 = [float(v) for v in b.xyxy[0].tolist()]
                         conf = float(b.conf[0])
-                        name = normalize_name(str(names.get(cls_id, "unknown")))
+                        name = normalize_object_name(str(names.get(cls_id, "unknown")), object_aliases)
 
                         # 鉁?schema 绋冲畾锛氭瘡鏉″繀鏈?name/conf/bbox
                         detections.append({

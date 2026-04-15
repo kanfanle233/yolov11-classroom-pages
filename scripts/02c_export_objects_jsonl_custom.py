@@ -5,6 +5,7 @@ import cv2
 import argparse
 from pathlib import Path
 from ultralytics import YOLO
+from object_evidence_mapping import load_object_evidence_config, normalize_object_name
 
 
 def chunked(lst, n):
@@ -31,6 +32,12 @@ def main():
         default="",
         help="comma-separated class ids to keep (e.g., '67,73,41,63'). empty means keep all classes"
     )
+    parser.add_argument(
+        "--mapping_config",
+        type=str,
+        default="contracts/object_evidence_mapping.json",
+        help="centralized object alias mapping json",
+    )
     args = parser.parse_args()
 
     # Resolve paths
@@ -50,6 +57,10 @@ def main():
         raise FileNotFoundError(f"Video not found: {video_path}")
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
+    mapping_config = Path(args.mapping_config)
+    if not mapping_config.is_absolute():
+        mapping_config = (base_dir / mapping_config).resolve()
+    object_aliases, _ = load_object_evidence_config(mapping_config)
 
     keep_ids = None
     if args.keep.strip():
@@ -59,6 +70,7 @@ def main():
     print(f"[INFO] out   : {out_path}")
     print(f"[INFO] model : {model_path}")
     print(f"[INFO] conf={args.conf}, iou={args.iou}, imgsz={args.imgsz}, batch={args.batch}, stride={args.stride}")
+    print(f"[INFO] mapping={mapping_config}")
     if keep_ids is not None:
         print(f"[INFO] keep class ids: {sorted(list(keep_ids))}")
 
@@ -110,7 +122,7 @@ def main():
                                 x1, y1, x2, y2 = box.tolist()
                                 objs.append({
                                     "cls_id": int(cid),
-                                    "name": names.get(int(cid), str(int(cid))),
+                                    "name": normalize_object_name(names.get(int(cid), str(int(cid))), object_aliases),
                                     "conf": float(cf),
                                     "bbox": [float(x1), float(y1), float(x2), float(y2)]
                                 })
@@ -150,7 +162,7 @@ def main():
                         x1, y1, x2, y2 = box.tolist()
                         objs.append({
                             "cls_id": int(cid),
-                            "name": names.get(int(cid), str(int(cid))),
+                            "name": normalize_object_name(names.get(int(cid), str(int(cid))), object_aliases),
                             "conf": float(cf),
                             "bbox": [float(x1), float(y1), float(x2), float(y2)]
                         })

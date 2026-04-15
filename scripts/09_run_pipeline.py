@@ -204,6 +204,12 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=25.0)
     parser.add_argument("--train_verifier", type=int, default=0, help="1=train verifier model before step07")
     parser.add_argument("--verifier_model", type=str, default="", help="path to verifier checkpoint (.pt)")
+    parser.add_argument("--train_variance_head", type=int, default=0, help="1=train minimal variance head before step03c")
+    parser.add_argument("--variance_model", type=str, default="", help="path to variance head checkpoint (.pt)")
+    parser.add_argument("--variance_epochs", type=int, default=60)
+    parser.add_argument("--variance_lr", type=float, default=1e-3)
+    parser.add_argument("--variance_hidden_dim", type=int, default=16)
+    parser.add_argument("--variance_weight", type=float, default=0.35)
     parser.add_argument("--eval_target_field", type=str, default="auto")
     parser.add_argument("--calibration_target_field", type=str, default="auto")
     parser.add_argument("--calibration_prob_field", type=str, default="p_match")
@@ -241,6 +247,8 @@ def main() -> None:
     aligned_json = out_dir / "align_multimodal.json"
     verified_events_jsonl = out_dir / "verified_events.jsonl"
     verifier_model = Path(args.verifier_model).resolve() if args.verifier_model else (out_dir / "verifier.pt")
+    variance_model = Path(args.variance_model).resolve() if args.variance_model else (out_dir / "variance_head.pt")
+    variance_report = out_dir / "variance_head_report.json"
     verifier_report_raw = out_dir / "verifier_report.raw.json"
     verifier_samples_raw = out_dir / "verifier_samples.raw.jsonl"
     verifier_samples_train = out_dir / "verifier_samples_train.jsonl"
@@ -294,8 +302,38 @@ def main() -> None:
         ),
     )
 
+    if int(args.train_variance_head) == 1:
+        maybe_run(
+            35,
+            "train variance head",
+            [variance_model, variance_report],
+            [pose_tracks],
+            args.force,
+            args.from_step,
+            lambda: run_step(
+                py,
+                scripts_dir / "03d_train_track_variance_head.py",
+                [
+                    "--pose_tracks",
+                    str(pose_tracks),
+                    "--out_model",
+                    str(variance_model),
+                    "--out_report",
+                    str(variance_report),
+                    "--epochs",
+                    str(int(args.variance_epochs)),
+                    "--lr",
+                    str(float(args.variance_lr)),
+                    "--hidden_dim",
+                    str(int(args.variance_hidden_dim)),
+                ],
+            ),
+        )
+    else:
+        print("[SKIP] step035 train variance head")
+
     maybe_run(
-        35,
+        36,
         "estimate uncertainty",
         [pose_uq],
         [pose_tracks],
@@ -304,7 +342,17 @@ def main() -> None:
         lambda: run_step(
             py,
             scripts_dir / "03c_estimate_track_uncertainty.py",
-            ["--in", str(pose_tracks), "--out", str(pose_uq), "--validate", "1"],
+            [
+                "--in",
+                str(pose_tracks),
+                "--out",
+                str(pose_uq),
+                "--validate",
+                "1",
+                "--variance_weight",
+                str(float(args.variance_weight)),
+            ]
+            + (["--variance_model", str(variance_model)] if variance_model.exists() else []),
         ),
     )
 
@@ -585,6 +633,8 @@ def main() -> None:
                 "verifier_samples_train": verifier_samples_train,
                 "verified_events": verified_events_jsonl,
                 "verifier_model": verifier_model,
+                "variance_model": variance_model,
+                "variance_report": variance_report,
                 "verifier_eval_report": verifier_eval_report,
                 "verifier_calibration_report": verifier_calibration_report,
                 "verifier_reliability_diagram": verifier_reliability_diagram,
@@ -595,10 +645,13 @@ def main() -> None:
             config_snapshot={
                 "from_step": int(args.from_step),
                 "train_verifier": int(args.train_verifier),
+                "train_variance_head": int(args.train_variance_head),
                 "action_mode": str(args.action_mode),
                 "asr_backend": str(args.asr_backend),
                 "interaction_model": str(args.interaction_model),
                 "enable_mllm": int(args.enable_mllm),
+                "variance_weight": float(args.variance_weight),
+                "variance_model": str(variance_model if variance_model.exists() else ""),
                 "eval_target_field": str(args.eval_target_field),
                 "calibration_target_field": str(args.calibration_target_field),
                 "calibration_prob_field": str(args.calibration_prob_field),
@@ -621,6 +674,7 @@ def main() -> None:
     print(f"Verifier eval report   : {verifier_eval_report}")
     print(f"Verifier calibration   : {verifier_calibration_report}")
     print(f"Reliability diagram    : {verifier_reliability_diagram}")
+    print(f"Variance head          : {variance_model if variance_model.exists() else 'not_used'}")
     print(f"Verifier model         : {verifier_model if verifier_model.exists() else 'not_used'}")
     print(f"Timeline chart         : {timeline_png}")
 

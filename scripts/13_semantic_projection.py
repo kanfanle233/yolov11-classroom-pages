@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--emb", required=True, help="Path to embeddings.pkl")
     parser.add_argument("--meta", required=True, help="Path to student_features.json")
     parser.add_argument("--out", required=True, help="Path to student_projection.json")
+    parser.add_argument("--text_cache", default="", help="Optional text embedding cache path.")
     parser.add_argument("--n_neighbors", type=int, default=15)
     parser.add_argument("--min_dist", type=float, default=0.1)
     parser.add_argument("--metric", type=str, default="cosine")
@@ -27,7 +28,8 @@ def main():
     args = parser.parse_args()
 
     base_dir = Path(__file__).resolve().parents[1]
-    emb_path = Path(args.emb)
+    emb_raw = args.text_cache if args.text_cache else args.emb
+    emb_path = Path(emb_raw)
     if not emb_path.is_absolute():
         emb_path = (base_dir / emb_path).resolve()
     if not emb_path.exists():
@@ -37,6 +39,11 @@ def main():
     print(f"[1/4] Loading embeddings from {emb_path}...")
     with open(emb_path, "rb") as f:
         raw_embeddings = pickle.load(f)
+    if isinstance(raw_embeddings, dict) and raw_embeddings:
+        first_value = next(iter(raw_embeddings.values()))
+        # Cache compatibility: {text_key: [float, ...]}
+        if isinstance(first_value, list) and first_value and isinstance(first_value[0], (int, float)):
+            raw_embeddings = {k: [v] for k, v in raw_embeddings.items()}
 
     track_ids = []
     X = []
@@ -144,8 +151,10 @@ def main():
     output_data = []
     for i, tid in enumerate(track_ids):
         info = meta_map.get(str(tid), {})
+        tid_int = int(tid) if str(tid).isdigit() else -1
         output_data.append({
-            "track_id": tid,
+            "track_id": tid_int,
+            "item_id": str(tid),
             "x": float(embedding_2d[i, 0]),
             "y": float(embedding_2d[i, 1]),
             "cluster": int(labels[i]),

@@ -125,6 +125,7 @@ def _build_aligned_fallback(
                     "action_confidence": a["action_confidence"],
                     "uq_track": float(uq_by_track.get(tid, 0.5)),
                     "uq_score": float(uq_by_track.get(tid, 0.5)),
+                    "uq_variance": float(uq_by_track.get(tid, 0.5)),
                 }
             )
         candidates.sort(key=lambda x: (x["overlap"], x["action_confidence"]), reverse=True)
@@ -334,6 +335,12 @@ def main() -> None:
                 "visual_score": _safe_float(evidence.get("visual_score", 0.0), 0.0),
                 "text_score": _safe_float(evidence.get("text_score", 0.0), 0.0),
                 "uq_score": _safe_float(evidence.get("uq_score", 1.0), 1.0),
+                "uq_variance": _safe_float(evidence.get("uq_variance", evidence.get("uq_score", 1.0)), 1.0),
+                "log_sigma2": _safe_float(evidence.get("log_sigma2", 0.0), 0.0),
+                "effective_temperature": _safe_float(
+                    evidence.get("effective_temperature", runtime_cfg.get("temperature", 1.0)),
+                    _safe_float(runtime_cfg.get("temperature", 1.0), 1.0),
+                ),
             },
         }
         verified_rows.append(out_row)

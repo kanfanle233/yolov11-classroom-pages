@@ -28,7 +28,7 @@ def main():
     ap.add_argument("--video", required=True, type=str)
     ap.add_argument("--out_jsonl", required=True, type=str)
     ap.add_argument("--out_video", required=True, type=str)
-    ap.add_argument("--model", type=str, default=str(base_dir / "yolo11s.pt"))
+    ap.add_argument("--model", type=str, default=str(base_dir / "yolo11x.pt"))
     ap.add_argument("--conf", type=float, default=0.15, help="小目标建议 0.1~0.2")
     ap.add_argument("--imgsz", type=int, default=960, help="小目标建议 960/1280")
     ap.add_argument("--device", type=str, default="", help="''=auto, '0'=GPU0, 'cpu'")

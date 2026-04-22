@@ -4,8 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Edu-Insight System (Tabbed Stats)</title>
-    <!-- D3.js v7 -->
-    <script src="https://cdn.bootcdn.net/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <!-- D3.js v7 (local-first, official mirror fallback) -->
+    <script src="./vendor/d3/d3.v7.min.js"></script>
+    <script src="./vendor/d3/d3-scale-chromatic.v3.min.js"></script>
+    <script>
+        if (!window.d3) {
+            document.write('<script src="https://d3js.org/d3.v7.min.js"><\/script>');
+        }
+    </script>
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -196,10 +202,21 @@
 
         /* Tooltip */
         #global-tooltip {
-            position: absolute; padding: 8px 12px; background: #fff;
-            color: #333; border: 1px solid #ddd; border-radius: 6px; font-size: 12px;
-            pointer-events: none; opacity: 0; z-index: 9999;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1); font-family: sans-serif;
+            position: absolute;
+            padding: 10px 12px;
+            background: linear-gradient(180deg, rgba(20, 27, 35, 0.95), rgba(20, 27, 35, 0.90));
+            color: #eef3f8;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 8px;
+            font-size: 12px;
+            line-height: 1.35;
+            pointer-events: none;
+            opacity: 0;
+            z-index: 9999;
+            box-shadow: 0 8px 20px rgba(12, 18, 26, 0.22);
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            transform: translateY(-6px);
+            transition: opacity 0.14s ease, transform 0.14s ease;
         }
 
         /* Loading */
@@ -215,13 +232,20 @@
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
         /* Scatter Pie */
-        .glyph-group { cursor: pointer; transition: transform 0.2s; }
-        .glyph-group:hover { transform: scale(1.3); z-index: 100; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.1)); }
-        .glyph-group.selected { stroke: #333; stroke-width: 2px; }
+        .glyph-group { cursor: pointer; transition: transform 0.18s ease, opacity 0.18s ease; }
+        .glyph-group:hover { transform: scale(1.14); z-index: 100; filter: drop-shadow(0 6px 10px rgba(0,0,0,0.15)); }
+        .glyph-group.selected .projection-halo { stroke: #162230; stroke-width: 2.4px; stroke-opacity: 0.95; }
         .glyph-group.dimmed { opacity: 0.1; }
+        .projection-grid line { stroke: #e8edf3; stroke-opacity: 0.85; }
+        .projection-grid path { display: none; }
+        .projection-axis text { fill: #8ca1b3; font-size: 10px; }
+        .projection-axis line, .projection-axis path { stroke: #d9e3ec; }
 
         /* PC Line */
-        .pc-line { fill: none; stroke-linejoin: round; transition: opacity 0.2s; }
+        .pc-line { fill: none; stroke-linejoin: round; transition: opacity 0.2s, stroke-width 0.2s; }
+        .gantt-row-bg { fill: #f7fafc; }
+        .gantt-axis text { fill: #8ca1b3; font-size: 10px; }
+        .gantt-axis path, .gantt-axis line { stroke: #d9e3ec; }
 
         /* Legend Styles (Updated: Only Gantt Legend) */
         #gantt-legend-bar {
@@ -690,6 +714,77 @@
         return `${m}:${sec.toString().padStart(2,'0')}`;
     }
 
+    const Tooltip = {
+        el: null,
+        init() {
+            this.el = document.getElementById("global-tooltip");
+        },
+        show(html, evt) {
+            if (!this.el) return;
+            this.el.innerHTML = html;
+            this.el.style.opacity = "1";
+            this.el.style.transform = "translateY(0)";
+            this.move(evt);
+        },
+        move(evt) {
+            if (!this.el || !evt) return;
+            const pad = 14;
+            const w = this.el.offsetWidth || 220;
+            const h = this.el.offsetHeight || 80;
+            let x = evt.pageX + pad;
+            let y = evt.pageY + pad;
+            const maxX = window.scrollX + window.innerWidth - w - 8;
+            const maxY = window.scrollY + window.innerHeight - h - 8;
+            if (x > maxX) x = evt.pageX - w - 10;
+            if (y > maxY) y = evt.pageY - h - 10;
+            this.el.style.left = `${Math.max(8, x)}px`;
+            this.el.style.top = `${Math.max(8, y)}px`;
+        },
+        hide() {
+            if (!this.el) return;
+            this.el.style.opacity = "0";
+            this.el.style.transform = "translateY(-6px)";
+        }
+    };
+
+    function safeNumber(v, fallback = 0) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+    }
+
+    function extentWithPadding(values, padRatio = 0.08, fallbackCenter = 0) {
+        const clean = values.map(v => safeNumber(v, NaN)).filter(v => Number.isFinite(v));
+        if (!clean.length) return [fallbackCenter - 1, fallbackCenter + 1];
+        let min = d3.min(clean);
+        let max = d3.max(clean);
+        if (min === max) {
+            const pad = Math.max(1e-3, Math.abs(min) * 0.12, 0.06);
+            return [min - pad, max + pad];
+        }
+        const pad = (max - min) * padRatio;
+        min -= pad;
+        max += pad;
+        return [min, max];
+    }
+
+    function summarizeActionsForTrack(timelineRows, trackId) {
+        const rows = timelineRows.filter(r => r.track_id === trackId);
+        const byAction = {};
+        let total = 0;
+        rows.forEach(r => {
+            const dur = Math.max(0, safeNumber(r.end) - safeNumber(r.start));
+            total += dur;
+            byAction[r.action_id] = (byAction[r.action_id] || 0) + dur;
+        });
+        const top = Object.entries(byAction).sort((a, b) => b[1] - a[1])[0] || ["unknown", 0];
+        return {
+            total,
+            byAction,
+            topActionId: top[0],
+            topActionDuration: safeNumber(top[1], 0)
+        };
+    }
+
     // ====== RENDER LEGENDS ======
     function renderLegends() {
         // 1. Projection Legend (REMOVED)
@@ -708,6 +803,7 @@
 
     // ====== INIT ======
     document.addEventListener("DOMContentLoaded", async () => {
+        Tooltip.init();
         await DataSource.init();
         Store.loadCaseList();
         renderLegends(); // Render static legends
@@ -850,69 +946,137 @@
     Store.subscribe("projectionLoaded", (state) => {
         const container = document.getElementById("projection-chart");
         container.innerHTML = "";
-        const points = state.projectionData?.points || [];
-        if(!points.length) { container.innerHTML = "<div style='padding:40px;text-align:center;'>No Data</div>"; return; }
+        const rawPoints = state.projectionData?.points || [];
+        const points = rawPoints
+            .map(p => ({
+                ...p,
+                x: safeNumber(p.x, NaN),
+                y: safeNumber(p.y, NaN),
+                track_id: safeNumber(p.track_id, NaN),
+            }))
+            .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.track_id));
+        if(!points.length) {
+            container.innerHTML = "<div style='padding:40px;text-align:center;'>No projection points</div>";
+            return;
+        }
 
-        const w = container.clientWidth, h = container.clientHeight;
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+        const margin = { top: 16, right: 18, bottom: 30, left: 32 };
+        const innerW = Math.max(80, w - margin.left - margin.right);
+        const innerH = Math.max(80, h - margin.top - margin.bottom);
         const svg = d3.select(container).append("svg").attr("width", w).attr("height", h);
+        const plot = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-        const xS = d3.scaleLinear().domain(d3.extent(points, d=>d.x)).range([40, w-40]);
-        const yS = d3.scaleLinear().domain(d3.extent(points, d=>d.y)).range([h-40, 40]);
+        const xS = d3.scaleLinear().domain(extentWithPadding(points.map(d => d.x), 0.09, 0)).range([0, innerW]);
+        const yS = d3.scaleLinear().domain(extentWithPadding(points.map(d => d.y), 0.09, 0)).range([innerH, 0]);
 
-        // Precompute action distribution for each student
-        const studentPies = {};
+        plot.append("g")
+            .attr("class", "projection-grid")
+            .attr("transform", `translate(0,${innerH})`)
+            .call(d3.axisBottom(xS).ticks(7).tickSize(-innerH).tickFormat(() => ""));
+        plot.append("g")
+            .attr("class", "projection-grid")
+            .call(d3.axisLeft(yS).ticks(6).tickSize(-innerW).tickFormat(() => ""));
+
+        plot.append("g")
+            .attr("class", "projection-axis")
+            .attr("transform", `translate(0,${innerH})`)
+            .call(d3.axisBottom(xS).ticks(6));
+        plot.append("g")
+            .attr("class", "projection-axis")
+            .call(d3.axisLeft(yS).ticks(5));
+
+        const actionSummaries = {};
         state.timelineData.forEach(d => {
-            if(!studentPies[d.track_id]) studentPies[d.track_id] = {};
-            const dur = d.end - d.start;
-            studentPies[d.track_id][d.action_id] = (studentPies[d.track_id][d.action_id] || 0) + dur;
+            const tid = safeNumber(d.track_id, NaN);
+            if (!Number.isFinite(tid)) return;
+            if (!actionSummaries[tid]) actionSummaries[tid] = summarizeActionsForTrack(state.timelineData, tid);
         });
 
-        // Pie generator
+        const maxDur = d3.max(points, p => safeNumber(actionSummaries[p.track_id]?.total, 0)) || 1;
+        const radiusScale = d3.scaleSqrt().domain([0, maxDur]).range([5.5, 11.5]);
         const pie = d3.pie().value(d => d.value).sort(null);
-        const arc = d3.arc().innerRadius(0).outerRadius(8); // Radius 8 for scatter dots
 
-        // Render Groups
-        const gs = svg.selectAll(".glyph-group")
+        const gs = plot.selectAll(".glyph-group")
             .data(points)
             .enter().append("g")
             .attr("class", "glyph-group")
-            .attr("transform", function(d) { return "translate(" + xS(d.x) + "," + yS(d.y) + ")"; })
+            .attr("transform", d => `translate(${xS(d.x)},${yS(d.y)})`)
+            .style("opacity", 0)
             .on("click", (e, d) => Store.setSelection(d.track_id))
-            .on("mouseover", function() { d3.select(this).style("z-index", 100); });
+            .on("mousemove", (e, d) => {
+                const summary = actionSummaries[d.track_id] || { total: 0, topActionId: "unknown", topActionDuration: 0 };
+                const topName = CONFIG.ACTION_NAMES[summary.topActionId] || summary.topActionId;
+                const topPct = summary.total > 0 ? ((summary.topActionDuration / summary.total) * 100).toFixed(1) : "0.0";
+                Tooltip.show(
+                    `<div><b>Track #${d.track_id}</b></div>
+                     <div>Top Action: <b>${topName}</b> (${topPct}%)</div>
+                     <div>Total Labeled: ${summary.total.toFixed(1)}s</div>`,
+                    e
+                );
+            })
+            .on("mouseleave", () => Tooltip.hide());
 
-        // Draw Pie Slices inside each group
+        gs.transition().duration(360).style("opacity", 1);
+
         gs.each(function(d) {
-            const counts = studentPies[d.track_id] || {0:1}; // Default listen if empty
-            const data = Object.entries(counts).map(([k,v]) => ({key:k, value:v}));
+            const summary = actionSummaries[d.track_id] || { total: 0, byAction: {0: 1} };
+            const counts = summary.byAction && Object.keys(summary.byAction).length ? summary.byAction : { 0: 1 };
+            const pieData = Object.entries(counts).map(([k, v]) => ({ key: k, value: v }));
+            const r = radiusScale(summary.total || 0);
+            const arc = d3.arc().innerRadius(0).outerRadius(r);
+
+            d3.select(this).append("circle")
+                .attr("class", "projection-halo")
+                .attr("r", r + 1.8)
+                .attr("fill", "rgba(255,255,255,0.92)")
+                .attr("stroke", "#b9cadb")
+                .attr("stroke-width", 1);
 
             d3.select(this).selectAll("path")
-                .data(pie(data))
+                .data(pie(pieData))
                 .enter().append("path")
                 .attr("d", arc)
                 .attr("fill", slice => CONFIG.COLORS[slice.data.key] || "#999")
-                .attr("stroke", "#fff")
-                .attr("stroke-width", 0.5);
+                .attr("stroke", "rgba(255,255,255,0.95)")
+                .attr("stroke-width", 0.65);
         });
 
-        // Add ID Label
-        gs.append("text").text(d => d.track_id).attr("y", 20).attr("text-anchor", "middle").attr("font-size", "10px").attr("fill", "#666");
+        gs.append("text")
+            .text(d => d.track_id)
+            .attr("y", 18)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "10px")
+            .attr("fill", "#55697d")
+            .attr("paint-order", "stroke")
+            .attr("stroke", "#fff")
+            .attr("stroke-width", 2);
     });
 
     Store.subscribe("selectionChanged", (state) => {
         // Highlight in projection
         d3.selectAll(".glyph-group")
             .classed("selected", d => d.track_id === state.selectedTrackId)
-            .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.2 : 1);
+            .classed("dimmed", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId))
+            .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.18 : 1);
 
         // Highlight Gantt
         d3.selectAll(".gantt-bar")
-            .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.1 : 1);
+            .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.12 : 1)
+            .style("stroke", d => d.track_id === state.selectedTrackId ? "rgba(8, 24, 44, 0.72)" : "rgba(255,255,255,0.70)")
+            .style("stroke-width", d => d.track_id === state.selectedTrackId ? 1.4 : 0.6);
 
         // Highlight PC lines
         d3.selectAll(".pc-line")
-            .style("stroke", d => d.id === state.selectedTrackId ? "var(--highlight)" : (state.selectedTrackId ? "#eee" : "var(--accent)"))
-            .style("opacity", d => d.id === state.selectedTrackId ? 1 : (state.selectedTrackId ? 0.1 : 0.3))
-            .style("stroke-width", d => d.id === state.selectedTrackId ? 2 : 1)
+            .style("stroke", function(d) {
+                if (d.id === state.selectedTrackId) return "var(--highlight)";
+                if (state.selectedTrackId) return "#d7e0e8";
+                const focus = safeNumber(this.getAttribute("data-focus"), 0);
+                return d3.interpolateRdYlGn(focus);
+            })
+            .style("opacity", d => d.id === state.selectedTrackId ? 1 : (state.selectedTrackId ? 0.15 : 0.44))
+            .style("stroke-width", d => d.id === state.selectedTrackId ? 2.5 : 1.2)
             .raise();
 
         renderStory(state);
@@ -989,31 +1153,69 @@
         if(!data.length) return;
 
         const w = container.clientWidth;
-        const maxRow = d3.max(data, d => d.row);
-        const rowH = Math.min(20, Math.max(10, container.clientHeight / (maxRow+1))); // Auto scale height
+        const uniqueRows = [...new Set(data.map(d => safeNumber(d.row, 0)))].sort((a, b) => a - b);
+        const rowPos = new Map(uniqueRows.map((r, idx) => [r, idx]));
+        const rowCount = Math.max(1, uniqueRows.length);
+        const axisH = 18;
+        const rowH = Math.min(22, Math.max(11, (container.clientHeight - axisH) / rowCount));
+        const innerH = rowCount * rowH;
+        const svgH = Math.max(container.clientHeight, axisH + innerH);
 
-        const svg = d3.select(container).append("svg").attr("width", w).attr("height", (maxRow+1)*rowH);
-        const x = d3.scaleLinear().domain([0, d3.max(data, d=>d.end)]).range([0, w]);
+        const svg = d3.select(container).append("svg").attr("width", w).attr("height", svgH);
+        const xMax = d3.max(data, d => safeNumber(d.end, 0)) || Math.max(1, safeNumber(state.videoDuration, 1));
+        const x = d3.scaleLinear().domain([0, xMax]).range([0, w]);
 
         // Store scale for cursor
         window.ganttScaleX = x;
 
-        svg.selectAll("rect")
+        svg.selectAll(".gantt-row-bg")
+            .data(uniqueRows)
+            .enter()
+            .append("rect")
+            .attr("class", "gantt-row-bg")
+            .attr("x", 0)
+            .attr("y", r => axisH + rowPos.get(r) * rowH)
+            .attr("width", w)
+            .attr("height", rowH)
+            .attr("fill-opacity", (_, i) => (i % 2 === 0 ? 0.55 : 0.0));
+
+        svg.append("g")
+            .attr("class", "gantt-axis")
+            .attr("transform", "translate(0,14)")
+            .call(d3.axisTop(x).ticks(Math.max(3, Math.min(12, Math.floor(w / 110)))).tickFormat(v => formatTime(v)));
+
+        svg.selectAll(".gantt-bar")
             .data(data).enter().append("rect")
             .attr("class", "gantt-bar")
             .attr("x", d => x(d.start))
-            .attr("y", d => d.row * rowH + 1)
-            .attr("width", d => Math.max(1, x(d.end) - x(d.start)))
+            .attr("y", d => axisH + rowPos.get(safeNumber(d.row, 0)) * rowH + 1)
+            .attr("width", 0)
             .attr("height", rowH - 2)
             .attr("fill", d => CONFIG.COLORS[d.action_id])
             .attr("rx", 2)
-            .on("click", (e,d) => { Store.setSelection(d.track_id); document.getElementById("myVideo").currentTime = d.start; });
+            .style("stroke", "rgba(255,255,255,0.70)")
+            .style("stroke-width", 0.6)
+            .on("click", (e,d) => { Store.setSelection(d.track_id); document.getElementById("myVideo").currentTime = d.start; })
+            .on("mousemove", (e, d) => {
+                const act = CONFIG.ACTION_NAMES[d.action_id] || d.action_id;
+                const dur = Math.max(0, safeNumber(d.end) - safeNumber(d.start));
+                Tooltip.show(
+                    `<div><b>Track #${d.track_id}</b></div>
+                     <div>Action: <b>${act}</b></div>
+                     <div>${formatTime(d.start)} - ${formatTime(d.end)} (${dur.toFixed(1)}s)</div>`,
+                    e
+                );
+            })
+            .on("mouseleave", () => Tooltip.hide())
+            .transition()
+            .duration(360)
+            .attr("width", d => Math.max(1, x(d.end) - x(d.start)));
 
         svg.selectAll("text")
-            .data([...new Set(data.map(d=>d.row))]).enter().append("text")
-            .attr("x", 5).attr("y", r => r*rowH + rowH/2 + 3)
+            .data(uniqueRows).enter().append("text")
+            .attr("x", 5).attr("y", r => axisH + rowPos.get(r) * rowH + rowH/2 + 3)
             .text(r => `S${r}`)
-            .attr("fill", "#fff").attr("font-size", "9px").style("text-shadow", "0 0 2px #000");
+            .attr("fill", "#5f7488").attr("font-size", "9px");
     }
 
     // 5. Parallel Coordinates (Fixed Layout: Removed Padding, Added D3 Margin)
@@ -1069,24 +1271,51 @@
         const y = {};
         dims.forEach(d => y[d] = d3.scaleLinear().domain([0,1]).range([innerH, 0]));
         const x = d3.scalePoint().range([0, innerW]).padding(0.1).domain(dims);
+        const focusColor = d3.scaleSequential(d3.interpolateRdYlGn).domain([0, 1]);
+        const lineGen = d3.line().curve(d3.curveMonotoneX);
+
+        // Vertical helper grid
+        svg.selectAll(".pc-v-grid")
+            .data(dims)
+            .enter()
+            .append("line")
+            .attr("class", "pc-v-grid")
+            .attr("x1", d => x(d))
+            .attr("x2", d => x(d))
+            .attr("y1", 0)
+            .attr("y2", innerH)
+            .attr("stroke", "#eef2f6")
+            .attr("stroke-width", 1);
 
         // Lines
-        svg.selectAll("path")
+        svg.selectAll(".pc-line")
             .data(data).enter().append("path")
             .attr("class", "pc-line")
-            .attr("d", d => d3.line()(dims.map(p => [x(p), y[p](d[p])])))
+            .attr("data-focus", d => d["Focus"].toFixed(4))
+            .attr("d", d => lineGen(dims.map(p => [x(p), y[p](d[p])])))
             .style("fill", "none")
-            .style("stroke", d => d.id === state.selectedTrackId ? "var(--highlight)" : "var(--accent)")
+            .style("stroke", d => d.id === state.selectedTrackId ? "var(--highlight)" : focusColor(d["Focus"]))
             .style("opacity", d => {
                 if (state.selectedTrackId && state.selectedTrackId !== d.id) return 0.1;
-                return d.id === state.selectedTrackId ? 1 : 0.3;
+                return d.id === state.selectedTrackId ? 1 : 0.44;
             })
-            .style("stroke-width", d => d.id === state.selectedTrackId ? 2 : 1);
+            .style("stroke-width", d => d.id === state.selectedTrackId ? 2.5 : 1.2)
+            .on("click", (e, d) => Store.setSelection(d.id))
+            .on("mousemove", (e, d) => {
+                Tooltip.show(
+                    `<div><b>Track #${d.id}</b></div>
+                     <div>Focus: ${(d.Focus * 100).toFixed(1)}%</div>
+                     <div>Interact: ${(d.Interact * 100).toFixed(1)}%</div>
+                     <div>Active: ${(d.Active * 100).toFixed(1)}%</div>`,
+                    e
+                );
+            })
+            .on("mouseleave", () => Tooltip.hide());
 
         // Axes
         dims.forEach(d => {
             const axisG = svg.append("g").attr("transform", "translate(" + x(d) + ",0)");
-            axisG.call(d3.axisLeft(y[d]).ticks(5).tickSize(-4));
+            axisG.call(d3.axisLeft(y[d]).ticks(5).tickSize(-4).tickFormat(v => `${Math.round(v * 100)}%`));
 
             axisG.append("text")
                 .attr("y", -12)

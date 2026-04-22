@@ -1,83 +1,343 @@
 {
   "cases": [
     {
+      "video_id": "front__001",
+      "view": "front",
+      "case_id": "001",
+      "paths": {
+        "timeline": "./data/cases/front__001/timeline_viz.json",
+        "projection": "./data/cases/front__001/analysis/projection.json",
+        "analysis_bundle": "./data/cases/front__001/analysis/bundle.json",
+        "transcript": "./data/cases/front__001/transcript.jsonl",
+        "tracks": "./data/cases/front__001/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/front__001.original.mp4",
+        "video_overlay": "./assets/videos/front__001.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "front__002",
+      "view": "front",
+      "case_id": "002",
+      "paths": {
+        "timeline": "./data/cases/front__002/timeline_viz.json",
+        "projection": "./data/cases/front__002/analysis/projection.json",
+        "analysis_bundle": "./data/cases/front__002/analysis/bundle.json",
+        "transcript": "./data/cases/front__002/transcript.jsonl",
+        "tracks": "./data/cases/front__002/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/front__002.original.mp4",
+        "video_overlay": "./assets/videos/front__002.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "front__003",
+      "view": "front",
+      "case_id": "003",
+      "paths": {
+        "timeline": "./data/cases/front__003/timeline_viz.json",
+        "projection": "./data/cases/front__003/analysis/projection.json",
+        "analysis_bundle": "./data/cases/front__003/analysis/bundle.json",
+        "transcript": "./data/cases/front__003/transcript.jsonl",
+        "tracks": "./data/cases/front__003/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/front__003.original.mp4",
+        "video_overlay": "./assets/videos/front__003.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "front__004",
+      "view": "front",
+      "case_id": "004",
+      "paths": {
+        "timeline": "./data/cases/front__004/timeline_viz.json",
+        "projection": "./data/cases/front__004/analysis/projection.json",
+        "analysis_bundle": "./data/cases/front__004/analysis/bundle.json",
+        "transcript": "./data/cases/front__004/transcript.jsonl",
+        "tracks": "./data/cases/front__004/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/front__004.original.mp4",
+        "video_overlay": "./assets/videos/front__004.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
       "video_id": "rear__0001",
-      "view": "后方视角",
+      "view": "rear",
       "case_id": "0001",
       "paths": {
         "timeline": "./data/cases/rear__0001/timeline_viz.json",
-        "projection": "./data/cases/rear__0001/student_projection.json",
+        "projection": "./data/cases/rear__0001/analysis/projection.json",
+        "analysis_bundle": "./data/cases/rear__0001/analysis/bundle.json",
         "transcript": "./data/cases/rear__0001/transcript.jsonl",
         "tracks": "./data/cases/rear__0001/pose_tracks_smooth.jsonl",
         "stats": null,
-        "video_original": "./assets/videos/rear__0001.mp4",
-        "video_overlay": "./assets/videos/rear__0001.mp4",
-        "video_pose": "./assets/videos/rear__0001.mp4",
-        "video_objects": "./assets/videos/rear__0001.mp4"
+        "video_original": "./assets/videos/rear__0001.original.mp4",
+        "video_overlay": "./assets/videos/rear__0001.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
       }
     },
     {
       "video_id": "rear__0002",
-      "view": "后方视角",
+      "view": "rear",
       "case_id": "0002",
       "paths": {
         "timeline": "./data/cases/rear__0002/timeline_viz.json",
-        "projection": "./data/cases/rear__0002/student_projection.json",
+        "projection": "./data/cases/rear__0002/analysis/projection.json",
+        "analysis_bundle": "./data/cases/rear__0002/analysis/bundle.json",
         "transcript": "./data/cases/rear__0002/transcript.jsonl",
         "tracks": "./data/cases/rear__0002/pose_tracks_smooth.jsonl",
         "stats": null,
-        "video_original": "./assets/videos/rear__0002.mp4",
-        "video_overlay": "./assets/videos/rear__0002.mp4",
-        "video_pose": "./assets/videos/rear__0002.mp4",
-        "video_objects": "./assets/videos/rear__0002.mp4"
+        "video_original": "./assets/videos/rear__0002.original.mp4",
+        "video_overlay": "./assets/videos/rear__0002.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
       }
     },
     {
       "video_id": "rear__0003",
-      "view": "后方视角",
+      "view": "rear",
       "case_id": "0003",
       "paths": {
         "timeline": "./data/cases/rear__0003/timeline_viz.json",
-        "projection": "./data/cases/rear__0003/student_projection.json",
+        "projection": "./data/cases/rear__0003/analysis/projection.json",
+        "analysis_bundle": "./data/cases/rear__0003/analysis/bundle.json",
         "transcript": "./data/cases/rear__0003/transcript.jsonl",
         "tracks": "./data/cases/rear__0003/pose_tracks_smooth.jsonl",
         "stats": null,
-        "video_original": "./assets/videos/rear__0003.mp4",
-        "video_overlay": "./assets/videos/rear__0003.mp4",
-        "video_pose": "./assets/videos/rear__0003.mp4",
-        "video_objects": "./assets/videos/rear__0003.mp4"
+        "video_original": "./assets/videos/rear__0003.original.mp4",
+        "video_overlay": "./assets/videos/rear__0003.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
       }
     },
     {
       "video_id": "rear__0004",
-      "view": "后方视角",
+      "view": "rear",
       "case_id": "0004",
       "paths": {
         "timeline": "./data/cases/rear__0004/timeline_viz.json",
-        "projection": "./data/cases/rear__0004/student_projection.json",
+        "projection": "./data/cases/rear__0004/analysis/projection.json",
+        "analysis_bundle": "./data/cases/rear__0004/analysis/bundle.json",
         "transcript": "./data/cases/rear__0004/transcript.jsonl",
         "tracks": "./data/cases/rear__0004/pose_tracks_smooth.jsonl",
         "stats": null,
-        "video_original": "./assets/videos/rear__0004.mp4",
-        "video_overlay": "./assets/videos/rear__0004.mp4",
-        "video_pose": "./assets/videos/rear__0004.mp4",
-        "video_objects": "./assets/videos/rear__0004.mp4"
+        "video_original": "./assets/videos/rear__0004.original.mp4",
+        "video_overlay": "./assets/videos/rear__0004.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
       }
     },
     {
-      "video_id": "rear__0005",
-      "view": "后方视角",
-      "case_id": "0005",
+      "video_id": "teacher__0001",
+      "view": "teacher",
+      "case_id": "0001",
       "paths": {
-        "timeline": "./data/cases/rear__0005/timeline_viz.json",
-        "projection": "./data/cases/rear__0005/student_projection.json",
-        "transcript": "./data/cases/rear__0005/transcript.jsonl",
-        "tracks": "./data/cases/rear__0005/pose_tracks_smooth.jsonl",
+        "timeline": "./data/cases/teacher__0001/timeline_viz.json",
+        "projection": "./data/cases/teacher__0001/analysis/projection.json",
+        "analysis_bundle": "./data/cases/teacher__0001/analysis/bundle.json",
+        "transcript": "./data/cases/teacher__0001/transcript.jsonl",
+        "tracks": "./data/cases/teacher__0001/pose_tracks_smooth.jsonl",
         "stats": null,
-        "video_original": "./assets/videos/rear__0005.mp4",
-        "video_overlay": "./assets/videos/rear__0005.mp4",
-        "video_pose": "./assets/videos/rear__0005.mp4",
-        "video_objects": "./assets/videos/rear__0005.mp4"
+        "video_original": "./assets/videos/teacher__0001.original.mp4",
+        "video_overlay": "./assets/videos/teacher__0001.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "teacher__0002",
+      "view": "teacher",
+      "case_id": "0002",
+      "paths": {
+        "timeline": "./data/cases/teacher__0002/timeline_viz.json",
+        "projection": "./data/cases/teacher__0002/analysis/projection.json",
+        "analysis_bundle": "./data/cases/teacher__0002/analysis/bundle.json",
+        "transcript": "./data/cases/teacher__0002/transcript.jsonl",
+        "tracks": "./data/cases/teacher__0002/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/teacher__0002.original.mp4",
+        "video_overlay": "./assets/videos/teacher__0002.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "teacher__0003",
+      "view": "teacher",
+      "case_id": "0003",
+      "paths": {
+        "timeline": "./data/cases/teacher__0003/timeline_viz.json",
+        "projection": "./data/cases/teacher__0003/analysis/projection.json",
+        "analysis_bundle": "./data/cases/teacher__0003/analysis/bundle.json",
+        "transcript": "./data/cases/teacher__0003/transcript.jsonl",
+        "tracks": "./data/cases/teacher__0003/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/teacher__0003.original.mp4",
+        "video_overlay": "./assets/videos/teacher__0003.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "teacher__0004",
+      "view": "teacher",
+      "case_id": "0004",
+      "paths": {
+        "timeline": "./data/cases/teacher__0004/timeline_viz.json",
+        "projection": "./data/cases/teacher__0004/analysis/projection.json",
+        "analysis_bundle": "./data/cases/teacher__0004/analysis/bundle.json",
+        "transcript": "./data/cases/teacher__0004/transcript.jsonl",
+        "tracks": "./data/cases/teacher__0004/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/teacher__0004.original.mp4",
+        "video_overlay": "./assets/videos/teacher__0004.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top1__0001",
+      "view": "top1",
+      "case_id": "0001",
+      "paths": {
+        "timeline": "./data/cases/top1__0001/timeline_viz.json",
+        "projection": "./data/cases/top1__0001/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top1__0001/analysis/bundle.json",
+        "transcript": "./data/cases/top1__0001/transcript.jsonl",
+        "tracks": "./data/cases/top1__0001/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top1__0001.original.mp4",
+        "video_overlay": "./assets/videos/top1__0001.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top1__0002",
+      "view": "top1",
+      "case_id": "0002",
+      "paths": {
+        "timeline": "./data/cases/top1__0002/timeline_viz.json",
+        "projection": "./data/cases/top1__0002/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top1__0002/analysis/bundle.json",
+        "transcript": "./data/cases/top1__0002/transcript.jsonl",
+        "tracks": "./data/cases/top1__0002/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top1__0002.original.mp4",
+        "video_overlay": "./assets/videos/top1__0002.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top1__0003",
+      "view": "top1",
+      "case_id": "0003",
+      "paths": {
+        "timeline": "./data/cases/top1__0003/timeline_viz.json",
+        "projection": "./data/cases/top1__0003/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top1__0003/analysis/bundle.json",
+        "transcript": "./data/cases/top1__0003/transcript.jsonl",
+        "tracks": "./data/cases/top1__0003/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top1__0003.original.mp4",
+        "video_overlay": "./assets/videos/top1__0003.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top1__0004",
+      "view": "top1",
+      "case_id": "0004",
+      "paths": {
+        "timeline": "./data/cases/top1__0004/timeline_viz.json",
+        "projection": "./data/cases/top1__0004/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top1__0004/analysis/bundle.json",
+        "transcript": "./data/cases/top1__0004/transcript.jsonl",
+        "tracks": "./data/cases/top1__0004/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top1__0004.original.mp4",
+        "video_overlay": "./assets/videos/top1__0004.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top2__250184",
+      "view": "top2",
+      "case_id": "250184",
+      "paths": {
+        "timeline": "./data/cases/top2__250184/timeline_viz.json",
+        "projection": "./data/cases/top2__250184/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top2__250184/analysis/bundle.json",
+        "transcript": "./data/cases/top2__250184/transcript.jsonl",
+        "tracks": "./data/cases/top2__250184/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top2__250184.original.mp4",
+        "video_overlay": "./assets/videos/top2__250184.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top2__250286",
+      "view": "top2",
+      "case_id": "250286",
+      "paths": {
+        "timeline": "./data/cases/top2__250286/timeline_viz.json",
+        "projection": "./data/cases/top2__250286/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top2__250286/analysis/bundle.json",
+        "transcript": "./data/cases/top2__250286/transcript.jsonl",
+        "tracks": "./data/cases/top2__250286/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top2__250286.original.mp4",
+        "video_overlay": "./assets/videos/top2__250286.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top2__250388",
+      "view": "top2",
+      "case_id": "250388",
+      "paths": {
+        "timeline": "./data/cases/top2__250388/timeline_viz.json",
+        "projection": "./data/cases/top2__250388/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top2__250388/analysis/bundle.json",
+        "transcript": "./data/cases/top2__250388/transcript.jsonl",
+        "tracks": "./data/cases/top2__250388/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top2__250388.original.mp4",
+        "video_overlay": "./assets/videos/top2__250388.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
+      }
+    },
+    {
+      "video_id": "top2__250489",
+      "view": "top2",
+      "case_id": "250489",
+      "paths": {
+        "timeline": "./data/cases/top2__250489/timeline_viz.json",
+        "projection": "./data/cases/top2__250489/analysis/projection.json",
+        "analysis_bundle": "./data/cases/top2__250489/analysis/bundle.json",
+        "transcript": "./data/cases/top2__250489/transcript.jsonl",
+        "tracks": "./data/cases/top2__250489/pose_tracks_smooth.jsonl",
+        "stats": null,
+        "video_original": "./assets/videos/top2__250489.original.mp4",
+        "video_overlay": "./assets/videos/top2__250489.overlay.mp4",
+        "video_pose": null,
+        "video_objects": null
       }
     }
   ]

@@ -79,6 +79,9 @@ def main():
     parser.add_argument("--in", dest="in_path", type=str, default=os.path.join("output", "pose_keypoints_v2.jsonl"))
     parser.add_argument("--out", dest="out_path", type=str, default=os.path.join("output", "pose_tracks_smooth.jsonl"))
     parser.add_argument("--video", dest="video_path", type=str, default=os.path.join("data", "videos", "demo1.mp4"))
+    parser.add_argument("--track_min_frames", type=int, default=75)
+    parser.add_argument("--track_min_frames_ratio", type=float, default=0.0)
+    parser.add_argument("--track_min_frames_min", type=int, default=10)
     args = parser.parse_args()
 
     in_path = Path(args.in_path)
@@ -93,9 +96,14 @@ def main():
 
     # ===== 用视频拿分辨率 =====
     cap = cv2.VideoCapture(video_path)
+    fps = 25.0
+    frame_count = 0
     if cap.isOpened():
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps_raw = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        fps = fps_raw if fps_raw > 0 else fps
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         cap.release()
     else:
         w, h = 1920, 1080
@@ -124,7 +132,13 @@ def main():
 
     # [修改点 3] 过滤短暂出现的人：从 30 改为 75
     # 75帧 = 3秒。只有由于持续存在超过3秒的检测才会被记录。
-    track_min_frames = 75
+    track_min_frames = max(1, int(args.track_min_frames))
+    if float(args.track_min_frames_ratio) > 0.0 and frame_count > 0:
+        adaptive_min = max(
+            int(args.track_min_frames_min),
+            int(frame_count * float(args.track_min_frames_ratio)),
+        )
+        track_min_frames = max(1, min(track_min_frames, adaptive_min))
 
     next_id = 1
     tracks = {}  # tid -> state
@@ -141,7 +155,7 @@ def main():
 
     print(f"[INFO] Tracking started using strict logic...")
     print(f"       max_lost_frames={max_lost_frames} (Memory ~20s)")
-    print(f"       track_min_frames={track_min_frames} (Filter <3s noise)")
+    print(f"       track_min_frames={track_min_frames} (configured={args.track_min_frames}, ratio={args.track_min_frames_ratio})")
     print(f"       tmp_path={tmp_path}")
 
     # ====== 第一遍：跑 tracking + 直接写临时 jsonl ======

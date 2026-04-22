@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--video", type=str, default="data/videos/demo1.mp4", help="relative path to project root")
     parser.add_argument("--out", type=str, default="output/pose_demo_out.mp4", help="relative path to project root")
     # ✅ 修复：默认模型放在项目根目录，而不是 runs/
-    parser.add_argument("--model", type=str, default="yolo11n-pose.pt", help="relative path to project root")
+    parser.add_argument("--model", type=str, default="yolo11x-pose.pt", help="relative path to project root")
     parser.add_argument("--imgsz", type=int, default=960, help="inference image size")
     parser.add_argument("--device", type=str, default="", help="device: 0/cuda/cpu; empty=auto")
     parser.add_argument("--half", type=int, default=0, help="1=fp16 (cuda only), 0=fp32")

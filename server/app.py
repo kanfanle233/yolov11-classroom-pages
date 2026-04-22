@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from functools import lru_cache
 import inspect
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -108,6 +108,28 @@ def _find_case_dir(video_id: str) -> Optional[Path]:
     return None
 
 
+def _find_case_dir_for_analysis(video_id: str) -> Optional[Path]:
+    direct = OUTPUT_DIR / video_id
+    candidates: List[Path] = []
+    if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
+        candidates.append(direct)
+
+    if OUTPUT_DIR.exists():
+        for candidate in OUTPUT_DIR.rglob(video_id):
+            if candidate.is_dir() and _looks_like_case_dir(candidate):
+                candidates.append(candidate)
+
+    if not candidates:
+        return None
+
+    def _rank(p: Path) -> Tuple[int, int]:
+        has_bundle = int((p / "analysis" / "bundle.json").exists())
+        # prefer bundle=1 first, then shorter path
+        return (-has_bundle, len(str(p)))
+
+    return sorted(candidates, key=_rank)[0]
+
+
 def _to_output_url(path: Path) -> str:
     rel = path.resolve().relative_to(OUTPUT_DIR)
     return f"/output/{rel.as_posix()}"
@@ -127,6 +149,19 @@ def _looks_like_case_dir(case_dir: Path) -> bool:
         "student_projection.json",
     ]
     return any((case_dir / m).exists() for m in markers)
+
+
+def _load_case_analysis_bundle(case_dir: Path) -> Optional[Dict[str, Any]]:
+    p = case_dir / "analysis" / "bundle.json"
+    if not p.exists():
+        return None
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -531,6 +566,60 @@ def list_cases():
             uniq[key] = c
 
     return sorted(list(uniq.values()), key=lambda x: (x["view"], x["video_id"]))
+
+
+@app.get("/api/analysis/list_cases")
+def list_analysis_cases():
+    cases = list_cases()
+    out: List[Dict[str, Any]] = []
+    for c in cases:
+        video_id = str(c.get("video_id", ""))
+        case_dir = _find_case_dir_for_analysis(video_id)
+        if case_dir is None:
+            continue
+        bundle = _load_case_analysis_bundle(case_dir)
+        bundle_path = case_dir / "analysis" / "bundle.json"
+        proj_path = case_dir / "analysis" / "projection.json"
+        out.append(
+            {
+                "video_id": video_id,
+                "view": str(c.get("view", "")),
+                "case_id": str(c.get("case_id", "")),
+                "has_analysis_bundle": bundle is not None,
+                "analysis_bundle": _to_output_url(bundle_path) if bundle_path.exists() else None,
+                "projection": _to_output_url(proj_path) if proj_path.exists() else None,
+                "num_slices": len(bundle.get("slices", [])) if bundle else 0,
+            }
+        )
+    return out
+
+
+@app.get("/api/analysis/case/{case_id}")
+def get_analysis_case(case_id: str):
+    case_dir = _find_case_dir_for_analysis(case_id)
+    if case_dir is None:
+        raise HTTPException(404, f"Case not found: {case_id}")
+    bundle = _load_case_analysis_bundle(case_dir)
+    if bundle is None:
+        raise HTTPException(404, f"Analysis bundle not found: {case_id}")
+    return bundle
+
+
+@app.get("/api/analysis/slices/{case_id}")
+def get_analysis_slices(case_id: str):
+    case_dir = _find_case_dir_for_analysis(case_id)
+    if case_dir is None:
+        raise HTTPException(404, f"Case not found: {case_id}")
+    bundle = _load_case_analysis_bundle(case_dir)
+    if bundle is None:
+        raise HTTPException(404, f"Analysis bundle not found: {case_id}")
+    return {
+        "video_id": case_dir.name,
+        "view": case_dir.parent.name if case_dir.parent != OUTPUT_DIR else "",
+        "meta": bundle.get("meta", {}),
+        "video_meta": bundle.get("video_meta", {}),
+        "slices": bundle.get("slices", []),
+    }
 
 
 @app.get("/api/media/{video_id}")

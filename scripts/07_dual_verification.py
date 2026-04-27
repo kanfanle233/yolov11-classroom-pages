@@ -50,8 +50,9 @@ def _interval_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
     return inter / denom
 
 
-def _normalize_actions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_actions(rows: List[Dict[str, Any]], *, require_semantic: bool = False) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
+    missing_semantic = 0
     for row in rows:
         tid = row.get("track_id")
         if not isinstance(tid, int):
@@ -62,16 +63,31 @@ def _normalize_actions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             st, ed = ed, st
         if ed <= st:
             ed = st + 0.2
+        has_semantic = bool(str(row.get("semantic_id", "")).strip()) and bool(str(row.get("behavior_code", "")).strip())
+        if require_semantic and not has_semantic:
+            missing_semantic += 1
+            continue
+        action_name = str(row.get("semantic_id", row.get("action", row.get("label", "")))).strip().lower()
         out.append(
             {
                 "track_id": tid,
-                "action": str(row.get("action", row.get("label", ""))).strip().lower(),
+                "action": action_name,
+                "raw_action": str(row.get("action", row.get("label", ""))).strip().lower(),
+                "behavior_code": str(row.get("behavior_code", "")).strip().lower(),
+                "behavior_label_zh": str(row.get("behavior_label_zh", "")).strip(),
+                "behavior_label_en": str(row.get("behavior_label_en", "")).strip(),
+                "semantic_id": str(row.get("semantic_id", action_name)).strip().lower(),
+                "semantic_label_zh": str(row.get("semantic_label_zh", "")).strip(),
+                "semantic_label_en": str(row.get("semantic_label_en", "")).strip(),
+                "taxonomy_version": str(row.get("taxonomy_version", "")).strip(),
                 "start_time": st,
                 "end_time": ed,
                 "action_confidence": _safe_float(row.get("confidence", row.get("conf", 0.5)), 0.5),
             }
         )
     out.sort(key=lambda x: (x["start_time"], x["track_id"]))
+    if require_semantic and missing_semantic > 0:
+        raise ValueError(f"semantic fields missing on {missing_semantic} action rows")
     return out
 
 
@@ -119,6 +135,14 @@ def _build_aligned_fallback(
                 {
                     "track_id": tid,
                     "action": a["action"],
+                    "raw_action": a["raw_action"],
+                    "behavior_code": a["behavior_code"],
+                    "behavior_label_zh": a["behavior_label_zh"],
+                    "behavior_label_en": a["behavior_label_en"],
+                    "semantic_id": a["semantic_id"],
+                    "semantic_label_zh": a["semantic_label_zh"],
+                    "semantic_label_en": a["semantic_label_en"],
+                    "taxonomy_version": a["taxonomy_version"],
                     "start_time": a["start_time"],
                     "end_time": a["end_time"],
                     "overlap": ov,
@@ -178,6 +202,14 @@ def _write_per_person_compat(
             {
                 "track_id": tid,
                 "action": a["action"],
+                "raw_action": a.get("raw_action", ""),
+                "behavior_code": a.get("behavior_code", ""),
+                "behavior_label_zh": a.get("behavior_label_zh", ""),
+                "behavior_label_en": a.get("behavior_label_en", ""),
+                "semantic_id": a.get("semantic_id", ""),
+                "semantic_label_zh": a.get("semantic_label_zh", ""),
+                "semantic_label_en": a.get("semantic_label_en", ""),
+                "taxonomy_version": a.get("taxonomy_version", ""),
                 "confidence": float(a["action_confidence"]),
                 "start_time": float(a["start_time"]),
                 "end_time": float(a["end_time"]),
@@ -234,6 +266,7 @@ def main() -> None:
     parser.add_argument("--keep_all_candidates", type=int, default=0)
     parser.add_argument("--per_person_out", default="", type=str, help="optional compatibility export")
     parser.add_argument("--validate", type=int, default=1)
+    parser.add_argument("--require_semantic", type=int, default=0)
     args = parser.parse_args()
 
     action_path = Path(args.actions)
@@ -261,7 +294,7 @@ def main() -> None:
 
     queries = _load_jsonl(query_path)
     q_index = {str(q.get("event_id", q.get("query_id", ""))): q for q in queries}
-    actions = _normalize_actions(_load_jsonl(action_path))
+    actions = _normalize_actions(_load_jsonl(action_path), require_semantic=bool(int(args.require_semantic)))
     uq_by_track = _load_uq_by_track(uq_path)
 
     # Ensure aligned input exists. If not provided, generate fallback alignment.
@@ -330,6 +363,15 @@ def main() -> None:
             "threshold_source": threshold_source,
             "model_version": model_version,
             "thresholds": runtime_cfg,
+            "action": str(row.get("action", "")),
+            "raw_action": str(row.get("raw_action", "")),
+            "behavior_code": str(row.get("behavior_code", "")),
+            "behavior_label_zh": str(row.get("behavior_label_zh", "")),
+            "behavior_label_en": str(row.get("behavior_label_en", "")),
+            "semantic_id": str(row.get("semantic_id", "")),
+            "semantic_label_zh": str(row.get("semantic_label_zh", "")),
+            "semantic_label_en": str(row.get("semantic_label_en", "")),
+            "taxonomy_version": str(row.get("taxonomy_version", "")),
             "evidence": {
                 "visual_score": _safe_float(evidence.get("visual_score", 0.0), 0.0),
                 "text_score": _safe_float(evidence.get("text_score", 0.0), 0.0),

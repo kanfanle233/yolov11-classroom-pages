@@ -110,11 +110,18 @@ def _predict_one(
     query_text: str,
     cand: Dict[str, Any],
     uq_default: float,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     overlap = _safe_float(cand.get("overlap", 0.0), 0.0)
     action_conf = _safe_float(cand.get("action_confidence", cand.get("confidence", 0.0)), 0.0)
     uq = _safe_float(cand.get("uq_score", cand.get("uq_track", uq_default)), uq_default)
-    action_label = str(cand.get("action", ""))
+    action_label = str(cand.get("semantic_id", cand.get("action", ""))).strip().lower()
+    raw_action = str(cand.get("action", "")).strip().lower()
+    behavior_code = str(cand.get("behavior_code", "")).strip().lower()
+    behavior_label_zh = str(cand.get("behavior_label_zh", "")).strip()
+    behavior_label_en = str(cand.get("behavior_label_en", "")).strip()
+    semantic_label_zh = str(cand.get("semantic_label_zh", "")).strip()
+    semantic_label_en = str(cand.get("semantic_label_en", "")).strip()
+    taxonomy_version = str(cand.get("taxonomy_version", "")).strip()
 
     feat = build_feature_vector(
         event_type=event_type,
@@ -155,6 +162,15 @@ def _predict_one(
         "visual_score": visual_score,
         "text_score": text_score,
         "uq_score": _clamp01(uq),
+        "action": action_label,
+        "raw_action": raw_action,
+        "behavior_code": behavior_code,
+        "behavior_label_zh": behavior_label_zh,
+        "behavior_label_en": behavior_label_en,
+        "semantic_id": action_label,
+        "semantic_label_zh": semantic_label_zh,
+        "semantic_label_en": semantic_label_en,
+        "taxonomy_version": taxonomy_version,
         "runtime_config": runtime_cfg.to_dict(),
     }
 
@@ -227,6 +243,15 @@ def infer_verified_rows(
                 "uncertainty": 1.0,
                 "p_match": 0.0,
                 "p_mismatch": 1.0,
+                "action": "",
+                "raw_action": "",
+                "behavior_code": "",
+                "behavior_label_zh": "",
+                "behavior_label_en": "",
+                "semantic_id": "",
+                "semantic_label_zh": "",
+                "semantic_label_en": "",
+                "taxonomy_version": "",
                 "threshold_source": threshold_source,
                 "runtime_config": runtime_cfg.to_dict(),
                 "evidence": {"visual_score": 0.0, "text_score": 0.0, "uq_score": 1.0},
@@ -248,6 +273,15 @@ def infer_verified_rows(
                 "uncertainty": float(score["uncertainty"]),
                 "p_match": float(score["p_match"]),
                 "p_mismatch": float(score["p_mismatch"]),
+                "action": str(score.get("action", "")),
+                "raw_action": str(score.get("raw_action", "")),
+                "behavior_code": str(score.get("behavior_code", "")),
+                "behavior_label_zh": str(score.get("behavior_label_zh", "")),
+                "behavior_label_en": str(score.get("behavior_label_en", "")),
+                "semantic_id": str(score.get("semantic_id", "")),
+                "semantic_label_zh": str(score.get("semantic_label_zh", "")),
+                "semantic_label_en": str(score.get("semantic_label_en", "")),
+                "taxonomy_version": str(score.get("taxonomy_version", "")),
                 "threshold_source": threshold_source,
                 "runtime_config": score["runtime_config"],
                 "evidence": {

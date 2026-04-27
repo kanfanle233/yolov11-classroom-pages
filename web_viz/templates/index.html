@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -8,7 +8,7 @@
     <script src="https://cdn.bootcdn.net/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
+<style>
         /* ====== Design System (Light Theme) ====== */
         :root {
             --bg-body: #f4f6f8;
@@ -32,14 +32,14 @@
             background: var(--bg-body); color: var(--text-main);
             height: 100vh;
             display: grid;
-            /* 原始布局 Grid */
+            /* 鍘熷甯冨眬 Grid */
             grid-template-columns: 200px 1fr 380px;
             grid-template-rows: 50px 1fr 220px;
             grid-template-areas: "header header header" "sidebar main stats" "sidebar bottom bottom";
             overflow: hidden; gap: 1px;
         }
 
-        /* 滚动条美化 */
+        /* 婊氬姩鏉＄編鍖?*/
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
@@ -165,14 +165,103 @@
             font-size: 12px; font-weight: 600; box-shadow: 0 2px 4px rgba(9,132,227,0.2);
         }
         .ctrl-btn:hover { background: #0070d2; transform: translateY(-1px); }
+        .ctrl-btn.ctrl-btn-ghost {
+            background: #f2f6fb;
+            color: #34516b;
+            box-shadow: none;
+            border: 1px solid #d6e2ef;
+        }
+        .ctrl-btn.ctrl-btn-ghost.active {
+            background: #0b6cc6;
+            color: #fff;
+            border-color: #0b6cc6;
+        }
+        .spatial-controls {
+            padding: 8px 15px;
+            background: #fafcff;
+            border-bottom: 1px solid var(--border);
+            display: none;
+            align-items: center;
+            gap: 10px;
+        }
+        .spatial-slider {
+            flex: 1;
+            min-width: 180px;
+        }
+        .spatial-label {
+            min-width: 160px;
+            font-size: 12px;
+            color: #4e6277;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+        .ctrl-hidden { display: none !important; }
+        .seat-timeline-stack {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+        }
+        .seat-panel {
+            flex: 0 0 58%;
+            min-height: 280px;
+            display: flex;
+            flex-direction: column;
+            border-bottom: 1px solid var(--border);
+            background: #fafafa;
+        }
+        .timeline-panel {
+            flex: 1;
+            min-height: 220px;
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+        }
+        .timeline-toolbar {
+            padding: 8px 12px;
+            border-bottom: 1px solid #edf1f5;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: #4b5d70;
+            background: #fbfdff;
+        }
+        .timeline-mode-switch {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .timeline-mode-btn {
+            border: 1px solid #d5e3f1;
+            background: #f4f8fc;
+            color: #425b74;
+            border-radius: 14px;
+            font-size: 11px;
+            line-height: 1;
+            padding: 6px 10px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .timeline-mode-btn.active {
+            border-color: #0b6cc6;
+            background: #0b6cc6;
+            color: #fff;
+        }
+        .timeline-note {
+            margin-left: auto;
+            color: #6e8093;
+            font-size: 11px;
+        }
 
         /* Bottom Area */
         .area-bottom { grid-area: bottom; background: #ffffff; display: flex; border-top: 1px solid var(--border); }
 
         .video-wrapper {
-            flex: 0 0 320px;
+            flex: 1;
             background: #000; display: flex; flex-direction: column; position: relative;
-            border-right: 1px solid var(--border);
+            border-right: none;
         }
         .video-controls {
             height: 32px; background: #fff; border-bottom: 1px solid #eee;
@@ -183,6 +272,7 @@
             font-size: 10px; padding: 2px 8px; cursor: pointer; border-radius: 16px; font-weight: 600;
         }
         .v-btn.active { background: var(--accent); color: #fff; }
+        .v-btn.disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 
         .vid-container-inner { flex: 1; position: relative; background: #000; overflow: hidden; display: flex; justify-content: center; }
         video { width: 100%; height: 100%; }
@@ -232,6 +322,7 @@
         .h-legend-dot { width: 8px; height: 8px; border-radius: 2px; }
 
     </style>
+
 </head>
 <body>
 
@@ -240,9 +331,7 @@
             <i class="fa-solid fa-layer-group"></i>
             <div>EDU-INSIGHT <span>SYSTEM</span></div>
         </div>
-        <div style="font-size:12px; color:var(--text-dim); display:flex; gap:15px; align-items:center;">
-             <div style="display:flex; align-items:center; gap:6px;"><div style="width:8px; height:8px; background:#2ecc71; border-radius:50%;"></div> Server Connected</div>
-        </div>
+        <div style="font-size: 13px; color: var(--text-dim);"><span style="color:#2ecc71">&#9679;</span> Server Connected</div>
     </header>
 
     <aside class="area-sidebar">
@@ -254,7 +343,7 @@
 
     <main class="area-main">
         <div class="tab-bar" id="tab-bar-container">
-            <button data-tab="projection" class="tab-btn active"><i class="fa-solid fa-chart-pie"></i> Student Clusters</button>
+            <button data-tab="projection" class="tab-btn active"><i class="fa-solid fa-chair"></i> Seat & Timeline</button>
             <button data-tab="transcript" class="tab-btn"><i class="fa-solid fa-align-left"></i> Semantic Stream</button>
             <button data-tab="group" class="tab-btn"><i class="fa-solid fa-users"></i> Group Dynamics</button>
         </div>
@@ -262,26 +351,51 @@
         <!-- View: Projection (Default) -->
         <div id="view-projection" class="view-panel active">
             <div class="controls-bar">
-                <span>Metrics:</span>
-                <select id="proj-metric" class="ctrl-select">
+                <span style="font-weight:700;color:#23415e;">Seat Projection (Spatial)</span>
+                <select id="proj-metric" class="ctrl-select ctrl-hidden">
                     <option value="euclidean">Behavior Composition (Euclidean)</option>
                     <option value="levenshtein">Sequence Similarity (Levenshtein)</option>
+                    <option value="spatial">Seat Layout (From Video Tracks)</option>
                 </select>
-                <select id="proj-method" class="ctrl-select">
+                <select id="proj-method" class="ctrl-select ctrl-hidden">
                     <option value="tsne">t-SNE</option>
                     <option value="pca">PCA</option>
                     <option value="mds">MDS</option>
                 </select>
                 <div style="flex:1"></div>
+                <a href="/paper/v2" target="_blank" rel="noopener" class="ctrl-btn ctrl-btn-ghost" style="text-decoration:none;">Seat & Timeline Detail</a>
                 <button id="btn-proj-apply" class="ctrl-btn">Update View</button>
             </div>
-            <div id="projection-chart" style="flex:1; position:relative; background:#fafafa;">
-                <div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#999; text-align:center;">
-                    <i class="fa-solid fa-chart-scatter" style="font-size:32px; margin-bottom:10px; opacity:0.3;"></i><br>
-                    Select options and Apply to generate clusters
+            <div class="seat-timeline-stack">
+                <div class="seat-panel">
+                    <div id="spatial-controls" class="spatial-controls">
+                        <button id="btn-spatial-sync" class="ctrl-btn ctrl-btn-ghost active">Follow Video</button>
+                        <input id="spatial-frame-slider" class="spatial-slider" type="range" min="0" max="0" value="0" step="1" />
+                        <span id="spatial-frame-label" class="spatial-label">Frame 0 (0.00s)</span>
+                    </div>
+                    <div id="projection-chart" style="flex:1; position:relative; background:#fafafa;">
+                        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:#999; text-align:center;">
+                            <i class="fa-solid fa-users-viewfinder" style="font-size:32px; margin-bottom:10px; opacity:0.3;"></i><br>
+                            Seat map is ready. Click Update View to refresh.
+                        </div>
+                    </div>
+                </div>
+                <div class="timeline-panel">
+                    <div class="timeline-toolbar">
+                        <strong style="letter-spacing:0.2px;">Timeline Viz</strong>
+                        <div class="timeline-mode-switch" id="timeline-mode-switch">
+                            <button class="timeline-mode-btn active" data-mode="swimlane">Swimlane</button>
+                            <button class="timeline-mode-btn" data-mode="heatmap">Day / Hour Heatmap</button>
+                        </div>
+                        <button id="btn-timeline-reset-zoom" class="ctrl-btn ctrl-btn-ghost">Reset Zoom</button>
+                        <span class="timeline-note">Brush to zoom in swimlane mode</span>
+                    </div>
+                    <div id="gantt-legend-bar"></div>
+                    <div id="gantt-container">
+                        <div id="cursor-gantt" class="cursor-line"></div>
+                    </div>
                 </div>
             </div>
-            <!-- REMOVED: Main View Legend -->
         </div>
 
         <!-- View: Transcript -->
@@ -317,7 +431,7 @@
             <div class="story-container" id="stat-list-content">
                 <div class="story-card" style="text-align:center; padding:40px 20px;">
                     <i class="fa-regular fa-lightbulb" style="font-size:32px; color:#ddd; margin-bottom:15px;"></i>
-                    <div style="color:#777; font-size:14px;">Select a student (pie chart) on the map to reveal their behavior pattern.</div>
+                    <div style="color:#777; font-size:14px;">Select a student from seat points or timeline bars to reveal behavior patterns.</div>
                 </div>
             </div>
         </div>
@@ -339,22 +453,12 @@
                 <button class="v-btn" data-mode="overlay">AI Overlay</button>
                 <button class="v-btn" data-mode="pose">Skeleton</button>
                 <div style="flex:1"></div>
+                <span id="time-display" style="font-size:11px; color:#9aa7b6;">00:00</span>
                 <button id="btn-bbox" class="v-btn"><i class="fa-solid fa-vector-square"></i> BBox</button>
             </div>
             <div class="vid-container-inner">
                 <video id="myVideo" controls playsinline></video>
                 <canvas id="overlayCanvas"></canvas>
-            </div>
-        </div>
-        <div class="viz-wrapper">
-            <div style="padding:5px 10px; border-bottom:1px solid #eee; font-size:11px; font-weight:bold; color:#aaa; display:flex; justify-content:space-between; flex-shrink:0;">
-                <span>TEMPORAL ACTIVITY</span>
-                <span id="time-display">00:00</span>
-            </div>
-            <!-- 甘特图横向图例条 -->
-            <div id="gantt-legend-bar"></div>
-            <div id="gantt-container">
-                <div id="cursor-gantt" class="cursor-line"></div>
             </div>
         </div>
     </section>
@@ -367,8 +471,9 @@
         API_BASE: (window.location.protocol === 'file:' || window.location.href.includes('scf.usercontent.goog'))
                   ? 'http://localhost:8000/api'
                   : '/api',
-        STATIC_MANIFEST: './data/manifest.json',
+        STATIC_MANIFEST: '/docs/data/manifest.json',
         STATIC_MANIFEST_CANDIDATES: [
+            '/docs/data/manifest.json',
             './data/manifest.json',
             '/data/manifest.json',
         ],
@@ -387,6 +492,18 @@
             "break": "#fadbd8",
             "individual_work": "#f6ddcc"
         }
+    };
+
+    const ACTION_NAME_TO_ID = {
+        listen: 0,
+        distract: 1,
+        phone: 2,
+        doze: 3,
+        chat: 4,
+        note: 5,
+        raise: 6,
+        stand: 7,
+        read: 8
     };
 
     async function fetchJsonStrict(url) {
@@ -413,17 +530,61 @@
         return [...new Set(merged)];
     }
 
+    function normalizeManifestPaths(manifest) {
+        const normalizePath = (p) => {
+            if (typeof p !== "string") return p;
+            if (p.startsWith("./data/")) return `/docs/${p.slice(2)}`;
+            if (p.startsWith("data/")) return `/docs/${p}`;
+            if (p.startsWith("./assets/")) return `/docs/${p.slice(2)}`;
+            if (p.startsWith("assets/")) return `/docs/${p}`;
+            return p;
+        };
+        if (!manifest || !Array.isArray(manifest.cases)) return manifest;
+        return {
+            ...manifest,
+            cases: manifest.cases.map((c) => {
+                const paths = c?.paths || {};
+                return {
+                    ...c,
+                    paths: Object.fromEntries(Object.entries(paths).map(([k, v]) => [k, normalizePath(v)])),
+                };
+            }),
+        };
+    }
+
     const DataSource = {
         mode: 'api',
         manifest: null,
 
         async init() {
+            if (window.location.protocol !== 'file:') {
+                try {
+                    await fetchJsonStrict(`${CONFIG.API_BASE}/list_cases`);
+                    this.mode = 'api';
+                    this.manifest = null;
+                    console.log('[DataSource] api mode');
+                    return;
+                } catch (e) {
+                    console.warn('[DataSource] api probe failed, fallback to static', e);
+                }
+            }
+
+            const shouldTryStaticFallback =
+                window.location.protocol === 'file:' ||
+                window.location.pathname.startsWith('/docs/');
+            if (!shouldTryStaticFallback) {
+                this.mode = 'api';
+                this.manifest = null;
+                console.log('[DataSource] api mode (skip static fallback)');
+                return;
+            }
+
             for (const manifestUrl of getManifestCandidates()) {
                 try {
                     const m = await fetchJsonStrict(manifestUrl);
                     if (m && Array.isArray(m.cases)) {
                         this.mode = 'static';
-                        this.manifest = m;
+                        this.manifest = normalizeManifestPaths(m);
                         console.log('[DataSource] static mode via', manifestUrl);
                         return;
                     }
@@ -470,7 +631,9 @@
                 if (!c?.paths?.timeline) return { items: [] };
                 return fetch(c.paths.timeline).then(r => r.ok ? r.json() : { items: [] });
             }
-            return fetchJsonStrict(`${CONFIG.API_BASE}/timeline/${caseId}`);
+            return fetch(`${CONFIG.API_BASE}/timeline/${encodeURIComponent(caseId)}`)
+                .then(r => r.ok ? r.json() : { items: [] })
+                .catch(() => ({ items: [] }));
         },
 
         async transcript(caseId) {
@@ -546,7 +709,17 @@
             isBBoxEnabled: false,
             videoUrls: {},
             filteredIds: null,
-            selectedTrackId: null
+            selectedTrackId: null,
+            videoFrameDataUrl: null,
+            videoFrameSize: { w: 0, h: 0 },
+            spatialScene: null,
+            spatialSyncWithVideo: true,
+            spatialManualFrame: 0,
+            spatialCurrentFrame: 0,
+            spatialFps: 25,
+            spatialFrameMax: 0,
+            timelineVizMode: "swimlane",
+            timelineZoomRange: null
         },
         listeners: {},
         subscribe(evt, fn) { (this.listeners[evt]||(this.listeners[evt]=[])).push(fn); },
@@ -565,8 +738,9 @@
                         video_id: item?.video_id || "",
                         case_id: item?.case_id || ((item?.video_id || "").split("__").pop() || ""),
                         path: item?.path || "",
+                        has_original_video: item?.has_original_video,
                     };
-                }).filter(x => x.video_id);
+                }).filter(x => x.video_id && x.has_original_video !== false);
                 this.state.caseList = normalized;
                 this.state.caseMap = Object.fromEntries(normalized.map(x => [x.video_id, x]));
             } catch(e) {
@@ -585,6 +759,14 @@
             this.notify("loadingStart");
 
             this.state.videoUrls = await resolveVideoUrls(caseId, this.state.caseMap[caseId]);
+            this.state.videoFrameDataUrl = null;
+            this.state.videoFrameSize = { w: 0, h: 0 };
+            this.state.spatialScene = null;
+            this.state.spatialSyncWithVideo = true;
+            this.state.spatialManualFrame = 0;
+            this.state.spatialCurrentFrame = 0;
+            this.state.spatialFrameMax = 0;
+            this.state.timelineZoomRange = null;
 
             try {
                 const [tl, tr, trk, st] = await Promise.all([
@@ -596,18 +778,92 @@
 
                 // Normalize Timeline
                 const persons = [], groups = [];
-                (tl.items||[]).forEach(d => {
-                    if(d.type === 'group') groups.push(d);
-                    else {
-                        d.start = parseFloat(d.start); d.end = parseFloat(d.end); d.track_id = parseInt(d.track_id);
-                        persons.push(d);
+                const timelineItems = Array.isArray(tl)
+                    ? tl
+                    : (Array.isArray(tl?.items) ? tl.items : []);
+                timelineItems.forEach(raw => {
+                    if (!raw || typeof raw !== "object") return;
+                    const d = { ...raw };
+                    if (d.type === "group") {
+                        groups.push(d);
+                        return;
                     }
+
+                    const stRaw = d.start ?? d.start_time ?? d.window_start ?? d.t ?? 0;
+                    const edRaw = d.end ?? d.end_time ?? d.window_end ?? stRaw;
+                    const st = Number.parseFloat(stRaw);
+                    let ed = Number.parseFloat(edRaw);
+                    if (!Number.isFinite(st)) return;
+                    if (!Number.isFinite(ed) || ed <= st) ed = st + 0.2;
+
+                    const tid = Number.parseInt(d.track_id, 10);
+                    if (!Number.isFinite(tid) || tid < 0) return;
+
+                    let aid = Number.parseInt(d.action_id, 10);
+                    if (!Number.isFinite(aid)) {
+                        const aName = String(d.action ?? d.action_label ?? "").trim().toLowerCase();
+                        aid = Object.prototype.hasOwnProperty.call(ACTION_NAME_TO_ID, aName)
+                            ? ACTION_NAME_TO_ID[aName]
+                            : -1;
+                    }
+
+                    persons.push({
+                        ...d,
+                        start: st,
+                        end: ed,
+                        track_id: tid,
+                        action_id: aid,
+                    });
                 });
 
                 // Re-assign rows
                 const tids = [...new Set(persons.map(d=>d.track_id))].sort((a,b)=>a-b);
                 const rowMap = new Map(tids.map((id,i)=>[id,i]));
                 persons.forEach(d => d.row = rowMap.get(d.track_id));
+
+                const trackFrameKeys = Object.keys(trk || {})
+                    .map((k) => Number(k))
+                    .filter((v) => Number.isFinite(v))
+                    .sort((a, b) => a - b);
+                const trackIdsFromBoxes = new Set();
+                for (const fk of trackFrameKeys) {
+                    const boxes = trk?.[String(fk)] || trk?.[fk] || [];
+                    for (const b of boxes) {
+                        const bid = Number.parseInt(b?.id, 10);
+                        if (Number.isFinite(bid) && bid >= 0) {
+                            trackIdsFromBoxes.add(bid);
+                        }
+                    }
+                }
+                if (trackIdsFromBoxes.size > 0) {
+                    const maxTimelineEnd = d3.max(persons, d => Number(d.end)) || 0;
+                    const frameMax = trackFrameKeys.length ? trackFrameKeys[trackFrameKeys.length - 1] : 0;
+                    let fpsGuess = 25;
+                    if (frameMax > 0 && maxTimelineEnd > 0) {
+                        const est = frameMax / maxTimelineEnd;
+                        if (est > 8 && est < 120) fpsGuess = est;
+                    }
+                    const syntheticEnd = Math.max(maxTimelineEnd, frameMax > 0 ? (frameMax / fpsGuess) : maxTimelineEnd, 1.0);
+                    const existing = new Set(persons.map((d) => Number(d.track_id)));
+                    [...trackIdsFromBoxes].sort((a, b) => a - b).forEach((tid) => {
+                        if (existing.has(tid)) return;
+                        persons.push({
+                            type: "person",
+                            track_id: tid,
+                            start: 0.0,
+                            end: syntheticEnd,
+                            action_id: -1,
+                            action: "unknown",
+                            synthetic_timeline: true,
+                            row: 0,
+                        });
+                    });
+                }
+
+                const mergedTids = [...new Set(persons.map(d=>d.track_id))].sort((a,b)=>a-b);
+                const mergedRowMap = new Map(mergedTids.map((id,i)=>[id,i]));
+                persons.forEach(d => d.row = mergedRowMap.get(d.track_id));
+                persons.sort((a, b) => (a.row - b.row) || (a.start - b.start));
 
                 this.state.timelineData = persons;
                 this.state.groupData = groups;
@@ -635,7 +891,10 @@
         async fetchProjection(method, metric) {
             const caseId = this.state.currentCaseId;
             if(!caseId) return;
-            document.getElementById("projection-chart").innerHTML = '<div style="text-align:center;padding:50px;color:#aaa;">Running Dimensionality Reduction...</div>';
+            const msg = metric === "spatial"
+                ? "Rendering spatial layout from tracked positions..."
+                : "Running dimensionality reduction...";
+            document.getElementById("projection-chart").innerHTML = `<div style="text-align:center;padding:50px;color:#aaa;">${msg}</div>`;
             try {
                 const res = await DataSource.projection(caseId, method, metric);
                 this.state.projectionData = res;
@@ -650,6 +909,7 @@
     async function resolveVideoUrls(caseId, caseMeta = null) {
         let base = CONFIG.API_BASE.startsWith("http") ? CONFIG.API_BASE.replace(/\/api\/?$/, "") : "";
         const res = {};
+        const dsMode = DataSource.mode || "api";
 
         try {
             const media = await DataSource.media(caseId);
@@ -663,11 +923,13 @@
             console.warn("media endpoint unavailable", e);
         }
 
-        if (!res.original) {
-            const originalCandidates = [`/assets/videos/${caseId}.mp4`];
-            if (caseMeta && caseMeta.view && caseMeta.case_id) {
-                originalCandidates.push(`/data/智慧课堂学生行为数据集/${caseMeta.view}/${caseMeta.case_id}.mp4`);
-            }
+        if (!res.original && dsMode === "static") {
+            const originalCandidates = [
+                `/assets/videos/${caseId}.original.mp4`,
+                `/assets/videos/${caseId}.mp4`,
+                `/docs/assets/videos/${caseId}.original.mp4`,
+                `/docs/assets/videos/${caseId}.mp4`,
+            ];
 
             for (const u of originalCandidates) {
                 try {
@@ -690,6 +952,274 @@
         return `${m}:${sec.toString().padStart(2,'0')}`;
     }
 
+    function captureVideoSnapshot(videoEl) {
+        try {
+            if (!videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return null;
+            const canvas = document.createElement("canvas");
+            canvas.width = videoEl.videoWidth;
+            canvas.height = videoEl.videoHeight;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) return null;
+            ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+            return {
+                url: canvas.toDataURL("image/jpeg", 0.85),
+                width: canvas.width,
+                height: canvas.height,
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function buildTrackDominantAction(rows) {
+        const agg = {};
+        (rows || []).forEach((d) => {
+            const tid = Number(d.track_id);
+            const aid = Number(d.action_id);
+            if (!Number.isFinite(tid) || !Number.isFinite(aid)) return;
+            const dur = Math.max(0, Number(d.end) - Number(d.start)) || 0.01;
+            if (!agg[tid]) agg[tid] = {};
+            agg[tid][aid] = (agg[tid][aid] || 0) + dur;
+        });
+        const out = {};
+        Object.entries(agg).forEach(([tid, byAct]) => {
+            const best = Object.entries(byAct).sort((a, b) => b[1] - a[1])[0];
+            out[Number(tid)] = best ? Number(best[0]) : 0;
+        });
+        return out;
+    }
+
+    function getTrackFrameKeys(state) {
+        return Object.keys(state.tracksData || {})
+            .map((k) => Number(k))
+            .filter((v) => Number.isFinite(v))
+            .sort((a, b) => a - b);
+    }
+
+    function nearestFrameKey(keys, target) {
+        if (!keys || !keys.length) return null;
+        const t = Number(target);
+        if (!Number.isFinite(t)) return keys[0];
+        let lo = 0;
+        let hi = keys.length - 1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            const mv = keys[mid];
+            if (mv === t) return mv;
+            if (mv < t) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        if (lo <= 0) return keys[0];
+        if (lo >= keys.length) return keys[keys.length - 1];
+        const a = keys[lo - 1], b = keys[lo];
+        return Math.abs(a - t) <= Math.abs(b - t) ? a : b;
+    }
+
+    function inferSpatialFps(state, frameMax) {
+        const vDur = Number(state.videoDuration || 0);
+        if (vDur > 0 && frameMax > 0) {
+            const est = frameMax / vDur;
+            if (est > 8 && est < 120) return est;
+        }
+        return 25;
+    }
+
+    function updateSpatialControls(state, frameHint = null, frameShown = null) {
+        const panel = document.getElementById("spatial-controls");
+        const slider = document.getElementById("spatial-frame-slider");
+        const label = document.getElementById("spatial-frame-label");
+        const syncBtn = document.getElementById("btn-spatial-sync");
+        if (!panel || !slider || !label || !syncBtn) return;
+
+        const isSpatial = state.projectionData?.metric === "spatial";
+        panel.style.display = isSpatial ? "flex" : "none";
+        if (!isSpatial) return;
+
+        const maxF = Math.max(0, Math.round(Number(state.spatialFrameMax || 0)));
+        slider.max = String(maxF);
+        slider.min = "0";
+
+        const frameRaw = frameHint == null ? state.spatialCurrentFrame : Number(frameHint);
+        const frameVal = Math.max(0, Math.min(maxF, Math.round(Number(frameRaw || 0))));
+        slider.value = String(frameVal);
+
+        syncBtn.classList.toggle("active", !!state.spatialSyncWithVideo);
+        syncBtn.textContent = state.spatialSyncWithVideo ? "Follow Video" : "Manual Frame";
+
+        const shown = frameShown == null ? frameVal : Number(frameShown);
+        const fps = Math.max(1e-6, Number(state.spatialFps || 25));
+        label.textContent = `Frame ${Math.round(shown)} (${(shown / fps).toFixed(2)}s)`;
+    }
+
+    function boxesToSpatialPoints(boxes, frameW, frameH) {
+        const fw = Math.max(1, Number(frameW || 1));
+        const fh = Math.max(1, Number(frameH || 1));
+        const points = [];
+        (boxes || []).forEach((b) => {
+            const tid = Number(b?.id);
+            const box = b?.box;
+            if (!Number.isFinite(tid) || !Array.isArray(box) || box.length < 4) return;
+            const x1 = Number(box[0]), y1 = Number(box[1]), x2 = Number(box[2]), y2 = Number(box[3]);
+            if (![x1, y1, x2, y2].every(Number.isFinite)) return;
+            const cx = (x1 + x2) * 0.5;
+            const cy = (y1 + y2) * 0.5;
+            points.push({
+                track_id: tid,
+                x: Math.max(0, Math.min(1, cx / fw)),
+                y: Math.max(0, Math.min(1, cy / fh)),
+                samples: 1,
+            });
+        });
+        return points;
+    }
+
+    function updateSpatialProjectionFrame(state, frameHint = null) {
+        const scene = state.spatialScene;
+        if (!scene) return;
+
+        const maxF = Math.max(0, Math.round(Number(state.spatialFrameMax || scene.frameMax || 0)));
+        let reqFrame = frameHint == null
+            ? (state.spatialSyncWithVideo
+                ? Math.round(Number(state.currentTime || 0) * Number(state.spatialFps || 25))
+                : Math.round(Number(state.spatialManualFrame || 0)))
+            : Math.round(Number(frameHint || 0));
+        reqFrame = Math.max(0, Math.min(maxF, reqFrame));
+
+        const nearest = nearestFrameKey(scene.frameKeys, reqFrame);
+        let points = [];
+        if (nearest != null) {
+            const boxes = state.tracksData[String(nearest)] || state.tracksData[nearest] || [];
+            points = boxesToSpatialPoints(boxes, scene.frameW, scene.frameH);
+        }
+        if (!points.length) {
+            points = scene.fallbackPoints || [];
+        }
+
+        const dominantAction = buildTrackDominantAction(state.timelineData || []);
+        const samplesMax = d3.max(points, d => Number(d.samples) || 1) || 1;
+        const rS = d3.scaleSqrt().domain([1, samplesMax]).range([5, 12]);
+
+        const gs = scene.pointsLayer.selectAll(".glyph-group")
+            .data(points, d => String(d.track_id));
+
+        gs.exit().remove();
+
+        const enter = gs.enter().append("g")
+            .attr("class", "glyph-group")
+            .on("click", (e, d) => Store.setSelection(Number(d.track_id)));
+
+        enter.append("circle");
+        enter.append("text")
+            .attr("dy", 3)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "9px")
+            .attr("fill", "#fff")
+            .style("pointer-events", "none");
+
+        const merged = enter.merge(gs);
+        merged
+            .attr("transform", d => `translate(${scene.ox + Number(d.x) * scene.drawW},${scene.oy + Number(d.y) * scene.drawH})`)
+            .style("opacity", d => (state.selectedTrackId && Number(d.track_id) !== Number(state.selectedTrackId)) ? 0.25 : 1.0);
+
+        merged.select("circle")
+            .attr("r", d => {
+                const base = rS(Number(d.samples) || 1);
+                return Number(d.track_id) === Number(state.selectedTrackId) ? base + 2 : base;
+            })
+            .attr("fill", d => CONFIG.COLORS[dominantAction[Number(d.track_id)] ?? 0] || "#3498db")
+            .attr("fill-opacity", 0.84)
+            .attr("stroke", d => Number(d.track_id) === Number(state.selectedTrackId) ? "#e17055" : "#0b1723")
+            .attr("stroke-width", d => Number(d.track_id) === Number(state.selectedTrackId) ? 2 : 0.8);
+
+        merged.select("text").text(d => d.track_id);
+
+        state.spatialCurrentFrame = nearest == null ? reqFrame : Number(nearest);
+        if (!state.spatialSyncWithVideo) {
+            state.spatialManualFrame = state.spatialCurrentFrame;
+        }
+        updateSpatialControls(state, state.spatialCurrentFrame, state.spatialCurrentFrame);
+    }
+
+    function renderSpatialProjection(state) {
+        const container = document.getElementById("projection-chart");
+        container.innerHTML = "";
+        const points = state.projectionData?.points || [];
+        if (!points.length) {
+            container.innerHTML = "<div style='padding:40px;text-align:center;'>No spatial points</div>";
+            state.spatialScene = null;
+            updateSpatialControls(state);
+            return;
+        }
+
+        const w = container.clientWidth || 900;
+        const h = container.clientHeight || 520;
+        const svg = d3.select(container).append("svg").attr("width", w).attr("height", h);
+
+        const frameW = Number(state.projectionData?.frame_w || state.videoFrameSize?.w || 16);
+        const frameH = Number(state.projectionData?.frame_h || state.videoFrameSize?.h || 9);
+        const pad = 16;
+        const scale = Math.min((w - pad * 2) / frameW, (h - pad * 2) / frameH);
+        const drawW = Math.max(20, frameW * scale);
+        const drawH = Math.max(20, frameH * scale);
+        const ox = (w - drawW) / 2;
+        const oy = (h - drawH) / 2;
+
+        if (state.videoFrameDataUrl) {
+            svg.append("image")
+                .attr("href", state.videoFrameDataUrl)
+                .attr("x", ox)
+                .attr("y", oy)
+                .attr("width", drawW)
+                .attr("height", drawH)
+                .attr("preserveAspectRatio", "none")
+                .attr("opacity", 0.92);
+        } else {
+            svg.append("rect")
+                .attr("x", ox)
+                .attr("y", oy)
+                .attr("width", drawW)
+                .attr("height", drawH)
+                .attr("fill", "#eef3f9");
+        }
+
+        svg.append("rect")
+            .attr("x", ox)
+            .attr("y", oy)
+            .attr("width", drawW)
+            .attr("height", drawH)
+            .attr("fill", "none")
+            .attr("stroke", "#9fb2c7")
+            .attr("stroke-width", 1.2);
+
+        const pointsLayer = svg.append("g");
+        const frameKeys = getTrackFrameKeys(state);
+        const frameMax = frameKeys.length ? frameKeys[frameKeys.length - 1] : 0;
+        state.spatialFrameMax = frameMax;
+        state.spatialFps = inferSpatialFps(state, frameMax);
+        state.spatialScene = {
+            svg,
+            pointsLayer,
+            ox,
+            oy,
+            drawW,
+            drawH,
+            frameW,
+            frameH,
+            frameKeys,
+            frameMax,
+            fallbackPoints: points,
+        };
+
+        svg.append("text")
+            .attr("x", ox + 8)
+            .attr("y", oy + 16)
+            .attr("fill", "#0b3558")
+            .attr("font-size", "11px")
+            .text("Spatial layout from tracked student positions");
+
+        updateSpatialProjectionFrame(state);
+    }
+
     // ====== RENDER LEGENDS ======
     function renderLegends() {
         // 1. Projection Legend (REMOVED)
@@ -706,11 +1236,38 @@
         }
     }
 
+    function updateTimelineModeButtons(state) {
+        document.querySelectorAll(".timeline-mode-btn").forEach((btn) => {
+            btn.classList.toggle("active", btn.dataset.mode === state.timelineVizMode);
+        });
+        const resetBtn = document.getElementById("btn-timeline-reset-zoom");
+        const hasZoom = Array.isArray(state.timelineZoomRange) && state.timelineZoomRange.length === 2;
+        resetBtn.disabled = !hasZoom;
+        resetBtn.style.opacity = hasZoom ? "1" : "0.6";
+    }
+
+    function renderTimelineView(state) {
+        updateTimelineModeButtons(state);
+        const hint = document.querySelector(".timeline-note");
+        const longOrDense = Number(state.videoDuration || 0) >= 600 || Number((state.timelineData || []).length) >= 1200;
+        if (hint) {
+            hint.textContent = longOrDense
+                ? "Long/high-density case: Day / Hour Heatmap is recommended"
+                : "Brush to zoom in swimlane mode";
+        }
+        if (state.timelineVizMode === "heatmap") {
+            renderDayHourHeatmap(state);
+            return;
+        }
+        renderGantt(state);
+    }
+
     // ====== INIT ======
     document.addEventListener("DOMContentLoaded", async () => {
         await DataSource.init();
         Store.loadCaseList();
         renderLegends(); // Render static legends
+        updateTimelineModeButtons(Store.state);
 
         // 1. Main Tab Switching
         document.getElementById("tab-bar-container").addEventListener("click", e => {
@@ -750,16 +1307,76 @@
         });
 
         // Projection
+        document.getElementById("proj-metric").value = "spatial";
+        document.getElementById("proj-method").value = "mds";
         document.getElementById("btn-proj-apply").addEventListener("click", () => {
             Store.fetchProjection(
                 document.getElementById("proj-method").value,
                 document.getElementById("proj-metric").value
             );
         });
+        document.getElementById("proj-metric").addEventListener("change", (e) => {
+            const metric = String(e.target?.value || "");
+            const methodSel = document.getElementById("proj-method");
+            if (metric === "spatial") {
+                methodSel.disabled = true;
+                methodSel.style.opacity = "0.6";
+            } else {
+                methodSel.disabled = false;
+                methodSel.style.opacity = "1";
+                Store.state.spatialScene = null;
+            }
+        });
+        document.getElementById("proj-metric").dispatchEvent(new Event("change"));
+
+        document.getElementById("timeline-mode-switch").addEventListener("click", (e) => {
+            const btn = e.target.closest(".timeline-mode-btn");
+            if (!btn) return;
+            const mode = String(btn.dataset.mode || "swimlane");
+            if (!["swimlane", "heatmap"].includes(mode)) return;
+            Store.state.timelineVizMode = mode;
+            updateTimelineModeButtons(Store.state);
+            renderTimelineView(Store.state);
+        });
+        document.getElementById("btn-timeline-reset-zoom").addEventListener("click", () => {
+            Store.state.timelineZoomRange = null;
+            renderTimelineView(Store.state);
+        });
+
+        document.getElementById("btn-spatial-sync").addEventListener("click", () => {
+            Store.state.spatialSyncWithVideo = !Store.state.spatialSyncWithVideo;
+            if (Store.state.spatialSyncWithVideo) {
+                const f = Math.round(Number(Store.state.currentTime || 0) * Number(Store.state.spatialFps || 25));
+                Store.state.spatialManualFrame = f;
+            }
+            updateSpatialProjectionFrame(Store.state);
+        });
+        document.getElementById("spatial-frame-slider").addEventListener("input", (e) => {
+            const frame = Math.max(0, Math.round(Number(e.target?.value || 0)));
+            Store.state.spatialSyncWithVideo = false;
+            Store.state.spatialManualFrame = frame;
+            const fps = Math.max(1e-6, Number(Store.state.spatialFps || 25));
+            const vEl = document.getElementById("myVideo");
+            if (vEl && Number.isFinite(vEl.duration) && vEl.duration > 0) {
+                const t = Math.max(0, Math.min(vEl.duration, frame / fps));
+                vEl.currentTime = t;
+            }
+            updateSpatialProjectionFrame(Store.state, frame);
+        });
 
         // Video setup
         const v = document.getElementById("myVideo");
         v.addEventListener("loadedmetadata", () => Store.state.videoDuration = v.duration);
+        v.addEventListener("loadeddata", () => {
+            const snap = captureVideoSnapshot(v);
+            if (snap) {
+                Store.state.videoFrameDataUrl = snap.url;
+                Store.state.videoFrameSize = { w: snap.width, h: snap.height };
+                if (Store.state.projectionData?.metric === "spatial") {
+                    Store.notify("projectionLoaded");
+                }
+            }
+        });
         v.addEventListener("timeupdate", () => {
             Store.state.currentTime = v.currentTime;
             Store.notify("timeUpdated");
@@ -775,7 +1392,10 @@
                 btn.classList.toggle("active", Store.state.isBBoxEnabled);
             } else if(btn.dataset.mode) {
                 const url = Store.state.videoUrls[btn.dataset.mode];
-                if(!url) { alert("Video not found"); return; }
+                if(!url) {
+                    console.warn("Video not found for mode:", btn.dataset.mode, Store.state.videoUrls);
+                    return;
+                }
                 const t = v.currentTime, p = !v.paused;
                 v.src = url; v.load();
                 v.onloadeddata = () => { v.currentTime = t; if(p) v.play(); };
@@ -808,7 +1428,10 @@
             const label = item.view ? `${item.view} / ${id}` : id;
             c.innerHTML += `<div class="list-item" data-id="${id}"><i class="fa-regular fa-file-video"></i> ${label}</div>`;
         });
-        if(state.caseList.length) Store.selectCase(state.caseList[0].video_id);
+        if(state.caseList.length) {
+            const preferred = state.caseList.find(x => String(x.video_id || "").includes("__")) || state.caseList[0];
+            Store.selectCase(preferred.video_id);
+        }
     });
 
     Store.subscribe("loadingStart", () => {
@@ -816,6 +1439,7 @@
         document.getElementById("projection-chart").innerHTML = '';
         document.getElementById("stat-list-content").innerHTML = '';
         document.getElementById("transcript-box").innerHTML = '';
+        updateSpatialControls(Store.state);
     });
 
     Store.subscribe("loadingEnd", () => document.getElementById("main-loading").style.display = "none");
@@ -829,9 +1453,24 @@
             const v = document.getElementById("myVideo");
             v.src = state.videoUrls.original;
             v.load();
+        } else {
+            const v = document.getElementById("myVideo");
+            v.removeAttribute("src");
+            v.load();
         }
 
-        renderGantt(state);
+        document.querySelectorAll(".v-btn[data-mode]").forEach((btn) => {
+            const mode = btn.dataset.mode;
+            const available = Boolean(state.videoUrls[mode]);
+            btn.classList.toggle("disabled", !available);
+            btn.classList.remove("active");
+        });
+        const originalBtn = document.querySelector('.v-btn[data-mode="original"]');
+        if (originalBtn && state.videoUrls.original) {
+            originalBtn.classList.add("active");
+        }
+
+        renderTimelineView(state);
         renderTranscript(state);
         renderGroup(state);
         renderPC(state); // Build parallel coords
@@ -839,15 +1478,21 @@
         // Initial story
         document.getElementById("stat-list-content").innerHTML = `
             <div class="story-card" style="text-align:center; padding:40px 20px;">
-                <i class="fa-solid fa-chart-pie" style="font-size:32px; color:#ddd; margin-bottom:15px;"></i>
+                <i class="fa-solid fa-chair" style="font-size:32px; color:#ddd; margin-bottom:15px;"></i>
                 <div class="story-title" style="justify-content:center;">Ready to Analyze</div>
-                <div class="story-text">Switch to "Student Clusters" and click Update to visualize behavior patterns.</div>
+                <div class="story-text">Switch to "Seat & Timeline" and click Update to refresh seat projection and timeline behavior.</div>
             </div>
         `;
     });
 
     // 2. Projection (Scatter Pie)
     Store.subscribe("projectionLoaded", (state) => {
+        if (state.projectionData?.metric === "spatial") {
+            renderSpatialProjection(state);
+            return;
+        }
+        updateSpatialControls(state);
+
         const container = document.getElementById("projection-chart");
         container.innerHTML = "";
         const points = state.projectionData?.points || [];
@@ -907,6 +1552,8 @@
         // Highlight Gantt
         d3.selectAll(".gantt-bar")
             .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.1 : 1);
+        d3.selectAll(".timeline-cell")
+            .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.22 : 1);
 
         // Highlight PC lines
         d3.selectAll(".pc-line")
@@ -914,6 +1561,10 @@
             .style("opacity", d => d.id === state.selectedTrackId ? 1 : (state.selectedTrackId ? 0.1 : 0.3))
             .style("stroke-width", d => d.id === state.selectedTrackId ? 2 : 1)
             .raise();
+
+        if (state.projectionData?.metric === "spatial") {
+            updateSpatialProjectionFrame(state);
+        }
 
         renderStory(state);
     });
@@ -924,22 +1575,27 @@
         const tid = state.selectedTrackId;
 
         if(!tid) {
-            container.innerHTML = `<div class="story-card" style="text-align:center; padding:40px 20px;"><div style="color:#aaa;">Click a pie chart to see the student's story.</div></div>`;
+            container.innerHTML = `<div class="story-card" style="text-align:center; padding:40px 20px;"><div style="color:#aaa;">Click a student point or timeline segment to see the student's story.</div></div>`;
             return;
         }
 
         // Generate data for story
         const actions = state.timelineData.filter(d => d.track_id === tid);
-        if(!actions.length) return;
+        if(!actions.length) {
+            container.innerHTML = `<div class="story-card" style="text-align:center; padding:28px 20px;"><div style="color:#97a6b4;">Student #${tid} has no timeline segments in current data source.</div></div>`;
+            return;
+        }
 
-        const totalDur = actions.reduce((s,d) => s+(d.end-d.start), 0);
+        const totalDurRaw = actions.reduce((s,d) => s+(d.end-d.start), 0);
+        const totalDur = Math.max(1e-6, totalDurRaw);
         const counts = {};
         actions.forEach(d => counts[d.action_id] = (counts[d.action_id]||0) + (d.end-d.start));
 
         // Find top behavior
         const sortedActs = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-        const topAct = CONFIG.ACTION_NAMES[sortedActs[0][0]];
+        const topAct = CONFIG.ACTION_NAMES[sortedActs[0][0]] || "Unknown";
         const topPct = Math.round((sortedActs[0][1]/totalDur)*100);
+        const topActText = topAct === "Unknown" ? "in unknown behavior states" : `${topAct}ing`;
 
         // Find distraction
         const distractDur = (counts[1]||0) + (counts[2]||0) + (counts[3]||0); // Distract, Phone, Doze
@@ -962,59 +1618,248 @@
                     <span style="font-size:12px; background:${color}; color:#fff; padding:2px 8px; border-radius:4px;">${mood}</span>
                 </div>
                 <div class="story-text">
-                    This student spent <b>${topPct}%</b> of the class time <b>${topAct}ing</b>.
+                    This student spent <b>${topPct}%</b> of the class time <b>${topActText}</b>.
                     ${distractPct > 10 ? `However, there were significant periods of distraction (${distractPct}%).` : `They maintained high focus throughout the session.`}
                     ${interactDur > 10 ? `Notably, they actively participated in interactions (Raise hand/Chat).` : ``}
                 </div>
                 <div class="tag-cloud">
-                    ${sortedActs.slice(0,3).map(x => `<span class="tag" style="border:1px solid ${CONFIG.COLORS[x[0]]}">${CONFIG.ACTION_NAMES[x[0]]} ${(x[1]/totalDur*100).toFixed(0)}%</span>`).join('')}
+                    ${sortedActs.slice(0,3).map(x => {
+                        const aid = Number(x[0]);
+                        const label = CONFIG.ACTION_NAMES[aid] || "Unknown";
+                        const color = CONFIG.COLORS[aid] || CONFIG.COLORS.unknown;
+                        return `<span class="tag" style="border:1px solid ${color}">${label} ${(x[1]/totalDur*100).toFixed(0)}%</span>`;
+                    }).join('')}
                 </div>
             </div>
 
             <div class="story-card">
                 <div class="story-title" style="font-size:13px;">Timeline Snapshot</div>
                 <div style="height:40px; background:#f9f9f9; position:relative; overflow:hidden; border-radius:4px;">
-                    ${actions.map(d => `<div style="position:absolute; left:${(d.start/state.videoDuration)*100}%; width:${Math.max(0.5, ((d.end-d.start)/state.videoDuration)*100)}%; top:0; bottom:0; background:${CONFIG.COLORS[d.action_id]}"></div>`).join('')}
+                    ${actions.map(d => {
+                        const dur = Math.max(1e-6, Number(state.videoDuration || 0), Number(d.end || 0));
+                        const left = (Number(d.start) / dur) * 100;
+                        const width = Math.max(0.5, ((Number(d.end) - Number(d.start)) / dur) * 100);
+                        const col = CONFIG.COLORS[d.action_id] || CONFIG.COLORS.unknown;
+                        return `<div style="position:absolute; left:${left}%; width:${width}%; top:0; bottom:0; background:${col}"></div>`;
+                    }).join('')}
                 </div>
             </div>
         `;
         container.innerHTML = html;
     }
 
-    // 4. Gantt
     function renderGantt(state) {
         const container = document.getElementById("gantt-container");
         container.innerHTML = '<div id="cursor-gantt" class="cursor-line"></div>';
-        const data = state.timelineData;
-        if(!data.length) return;
+        const data = (state.timelineData || []).slice();
+        if (!data.length) {
+            container.innerHTML += "<div style='padding:26px; color:#97a6b4;'>No timeline data</div>";
+            window.ganttScaleX = null;
+            return;
+        }
 
-        const w = container.clientWidth;
-        const maxRow = d3.max(data, d => d.row);
-        const rowH = Math.min(20, Math.max(10, container.clientHeight / (maxRow+1))); // Auto scale height
+        const tracks = [...new Set(data.map(d => Number(d.track_id)))].sort((a, b) => a - b);
+        const rowIndex = new Map(tracks.map((tid, idx) => [tid, idx]));
+        const { domain, maxEnd } = getTimelineDomain(state, data);
 
-        const svg = d3.select(container).append("svg").attr("width", w).attr("height", (maxRow+1)*rowH);
-        const x = d3.scaleLinear().domain([0, d3.max(data, d=>d.end)]).range([0, w]);
+        const w = Math.max(320, container.clientWidth || 900);
+        const hAvail = Math.max(170, container.clientHeight || 260);
+        const margin = { top: 8, right: 10, bottom: 24, left: 56 };
+        const rowH = Math.max(14, Math.min(24, Math.floor((hAvail - margin.top - margin.bottom) / Math.max(1, tracks.length))));
+        const innerH = Math.max(30, rowH * tracks.length);
+        const svgH = margin.top + innerH + margin.bottom;
+        const x = d3.scaleLinear().domain(domain).range([margin.left, w - margin.right]);
+        const xCursor = (t) => x(Math.max(domain[0], Math.min(domain[1], Number(t || 0))));
+        window.ganttScaleX = xCursor;
 
-        // Store scale for cursor
-        window.ganttScaleX = x;
+        const visible = data
+            .map(d => ({
+                ...d,
+                s: Math.max(domain[0], Number(d.start)),
+                e: Math.min(domain[1], Number(d.end)),
+                row: rowIndex.get(Number(d.track_id)) ?? 0,
+            }))
+            .filter(d => d.e > d.s);
 
-        svg.selectAll("rect")
-            .data(data).enter().append("rect")
+        const svg = d3.select(container).append("svg").attr("width", w).attr("height", svgH);
+
+        svg.selectAll("rect.gantt-bar")
+            .data(visible)
+            .enter().append("rect")
             .attr("class", "gantt-bar")
-            .attr("x", d => x(d.start))
-            .attr("y", d => d.row * rowH + 1)
-            .attr("width", d => Math.max(1, x(d.end) - x(d.start)))
-            .attr("height", rowH - 2)
-            .attr("fill", d => CONFIG.COLORS[d.action_id])
+            .attr("x", d => x(d.s))
+            .attr("y", d => margin.top + d.row * rowH + 1)
+            .attr("width", d => Math.max(1, x(d.e) - x(d.s)))
+            .attr("height", Math.max(4, rowH - 2))
+            .attr("fill", d => CONFIG.COLORS[d.action_id] || CONFIG.COLORS.unknown)
             .attr("rx", 2)
-            .on("click", (e,d) => { Store.setSelection(d.track_id); document.getElementById("myVideo").currentTime = d.start; });
+            .style("opacity", d => (state.selectedTrackId && Number(state.selectedTrackId) !== Number(d.track_id)) ? 0.1 : 1)
+            .on("click", (e, d) => {
+                Store.setSelection(d.track_id);
+                document.getElementById("myVideo").currentTime = Number(d.start) || 0;
+            });
 
-        svg.selectAll("text")
-            .data([...new Set(data.map(d=>d.row))]).enter().append("text")
-            .attr("x", 5).attr("y", r => r*rowH + rowH/2 + 3)
-            .text(r => `S${r}`)
-            .attr("fill", "#fff").attr("font-size", "9px").style("text-shadow", "0 0 2px #000");
+        svg.selectAll("text.gantt-row-label")
+            .data(tracks)
+            .enter().append("text")
+            .attr("class", "gantt-row-label")
+            .attr("x", margin.left - 6)
+            .attr("y", (tid) => margin.top + (rowIndex.get(tid) ?? 0) * rowH + rowH * 0.64)
+            .attr("text-anchor", "end")
+            .attr("fill", "#4f657b")
+            .attr("font-size", "10px")
+            .text((tid) => `S${tid}`);
+
+        const axis = d3.axisBottom(x).ticks(Math.max(3, Math.floor((w - margin.left) / 160))).tickFormat((v) => formatTime(Number(v)));
+        svg.append("g")
+            .attr("transform", `translate(0, ${margin.top + innerH})`)
+            .call(axis)
+            .selectAll("text")
+            .attr("font-size", "10px")
+            .attr("fill", "#6a7f93");
+
+        const brush = d3.brushX()
+            .extent([[margin.left, margin.top], [w - margin.right, margin.top + innerH]])
+            .on("end", (event) => {
+                if (!event.selection) return;
+                const [x0, x1] = event.selection.map(x.invert);
+                const start = Math.max(0, Math.min(x0, x1));
+                const end = Math.min(maxEnd, Math.max(x0, x1));
+                if (end - start < 0.4) return;
+                state.timelineZoomRange = [start, end];
+                renderTimelineView(state);
+            });
+
+        svg.append("g").attr("class", "timeline-brush").call(brush);
     }
+
+    function renderDayHourHeatmap(state) {
+        const container = document.getElementById("gantt-container");
+        container.innerHTML = '<div id="cursor-gantt" class="cursor-line"></div>';
+        const data = (state.timelineData || []).slice();
+        if (!data.length) {
+            container.innerHTML += "<div style='padding:26px; color:#97a6b4;'>No timeline data</div>";
+            window.ganttScaleX = null;
+            return;
+        }
+
+        const tracks = [...new Set(data.map(d => Number(d.track_id)))].sort((a, b) => a - b);
+        const trackIndex = new Map(tracks.map((tid, idx) => [tid, idx]));
+        const { domain } = getTimelineDomain(state, data);
+        const span = Math.max(1e-6, domain[1] - domain[0]);
+        const longCase = Number(state.videoDuration || 0) >= 600 || tracks.length >= 18 || data.length >= 1200;
+        const bins = longCase ? 36 : 24;
+        const binSize = span / bins;
+
+        const agg = new Map();
+        for (const d of data) {
+            const s = Math.max(domain[0], Number(d.start));
+            const e = Math.min(domain[1], Number(d.end));
+            if (!(e > s)) continue;
+            const b0 = Math.max(0, Math.floor((s - domain[0]) / binSize));
+            const b1 = Math.min(bins - 1, Math.floor((e - domain[0]) / binSize));
+            for (let b = b0; b <= b1; b++) {
+                const bs = domain[0] + b * binSize;
+                const be = bs + binSize;
+                const overlap = Math.max(0, Math.min(e, be) - Math.max(s, bs));
+                if (overlap <= 1e-6) continue;
+                const key = `${d.track_id}|${b}`;
+                if (!agg.has(key)) {
+                    agg.set(key, { track_id: Number(d.track_id), bin: b, total: 0, actions: {} });
+                }
+                const cur = agg.get(key);
+                cur.total += overlap;
+                cur.actions[d.action_id] = (cur.actions[d.action_id] || 0) + overlap;
+            }
+        }
+
+        const cells = [];
+        for (const tid of tracks) {
+            for (let b = 0; b < bins; b++) {
+                const key = `${tid}|${b}`;
+                const cur = agg.get(key) || { track_id: tid, bin: b, total: 0, actions: {} };
+                let dominant = "unknown";
+                let maxVal = -1;
+                for (const [aid, val] of Object.entries(cur.actions)) {
+                    if (Number(val) > maxVal) {
+                        maxVal = Number(val);
+                        dominant = aid;
+                    }
+                }
+                cells.push({
+                    track_id: tid,
+                    bin: b,
+                    density: Math.max(0, Number(cur.total) / Math.max(1e-6, binSize)),
+                    dominant_action: dominant,
+                    bin_start: domain[0] + b * binSize,
+                });
+            }
+        }
+
+        const w = Math.max(320, container.clientWidth || 900);
+        const hAvail = Math.max(170, container.clientHeight || 260);
+        const margin = { top: 8, right: 10, bottom: 24, left: 56 };
+        const rowH = Math.max(12, Math.min(20, Math.floor((hAvail - margin.top - margin.bottom) / Math.max(1, tracks.length))));
+        const innerH = Math.max(30, rowH * tracks.length);
+        const svgH = margin.top + innerH + margin.bottom;
+        const x = d3.scaleBand().domain(d3.range(bins)).range([margin.left, w - margin.right]).paddingInner(0.02);
+        const xCursor = d3.scaleLinear().domain(domain).range([margin.left, w - margin.right]);
+        window.ganttScaleX = (t) => xCursor(Math.max(domain[0], Math.min(domain[1], Number(t || 0))));
+        const y = d3.scaleBand().domain(tracks).range([margin.top, margin.top + innerH]).paddingInner(0.06);
+        const color = d3.scaleSequential(d3.interpolateYlGnBu).domain([0, 1]);
+
+        const svg = d3.select(container).append("svg").attr("width", w).attr("height", svgH);
+        const tooltip = d3.select("#global-tooltip");
+
+        svg.selectAll("rect.timeline-cell")
+            .data(cells)
+            .enter().append("rect")
+            .attr("class", "timeline-cell")
+            .attr("x", d => x(d.bin))
+            .attr("y", d => y(d.track_id))
+            .attr("width", Math.max(1, x.bandwidth()))
+            .attr("height", Math.max(2, y.bandwidth()))
+            .attr("fill", d => color(Math.min(1, d.density)))
+            .attr("stroke", d => CONFIG.COLORS[d.dominant_action] || "#d8e1eb")
+            .attr("stroke-width", 0.35)
+            .style("opacity", d => (state.selectedTrackId && Number(state.selectedTrackId) !== Number(d.track_id)) ? 0.22 : 1)
+            .on("mousemove", function (event, d) {
+                tooltip
+                    .style("opacity", 1)
+                    .style("left", `${event.pageX + 12}px`)
+                    .style("top", `${event.pageY - 12}px`)
+                    .html(
+                        `Student ${d.track_id}<br>` +
+                        `Time ${formatTime(d.bin_start)}-${formatTime(d.bin_start + binSize)}<br>` +
+                        `Density ${(d.density * 100).toFixed(0)}%`
+                    );
+            })
+            .on("mouseleave", () => tooltip.style("opacity", 0))
+            .on("click", (e, d) => {
+                Store.setSelection(d.track_id);
+                document.getElementById("myVideo").currentTime = Number(d.bin_start) || 0;
+            });
+
+        svg.selectAll("text.heat-row-label")
+            .data(tracks)
+            .enter().append("text")
+            .attr("x", margin.left - 6)
+            .attr("y", tid => (y(tid) || 0) + y.bandwidth() * 0.64)
+            .attr("text-anchor", "end")
+            .attr("fill", "#4f657b")
+            .attr("font-size", "10px")
+            .text((tid) => `S${tid}`);
+
+        const xTick = d3.scaleLinear().domain(domain).range([margin.left, w - margin.right]);
+        const axis = d3.axisBottom(xTick).ticks(Math.max(3, Math.floor((w - margin.left) / 160))).tickFormat((v) => formatTime(Number(v)));
+        svg.append("g")
+            .attr("transform", `translate(0, ${margin.top + innerH})`)
+            .call(axis)
+            .selectAll("text")
+            .attr("font-size", "10px")
+            .attr("fill", "#6a7f93");
+    }
+
 
     // 5. Parallel Coordinates (Fixed Layout: Removed Padding, Added D3 Margin)
     function renderPC(state) {
@@ -1143,7 +1988,10 @@
         if(window.ganttScaleX) {
             const x = window.ganttScaleX(t);
             const cur = document.getElementById("cursor-gantt");
-            cur.style.display = "block"; cur.style.left = x + "px";
+            if (cur) {
+                cur.style.display = "block";
+                cur.style.left = x + "px";
+            }
         }
 
         // Transcript Sync
@@ -1158,6 +2006,10 @@
                 }
             }
         });
+
+        if (state.projectionData?.metric === "spatial" && state.spatialSyncWithVideo) {
+            updateSpatialProjectionFrame(state);
+        }
     });
 
     // Canvas Loop
@@ -1174,9 +2026,15 @@
 
             // Draw BBoxes
             if(Store.state.isBBoxEnabled || Store.state.selectedTrackId) {
-                const fps = 25;
-                const f = Math.round(v.currentTime*fps);
-                const boxes = Store.state.tracksData[f] || [];
+                const fps = Math.max(1e-6, Number(Store.state.spatialFps || 25));
+                const f = Math.round(v.currentTime * fps);
+                let boxes = Store.state.tracksData[f] || Store.state.tracksData[String(f)] || [];
+                if ((!boxes || !boxes.length) && Store.state.spatialScene?.frameKeys?.length) {
+                    const nearest = nearestFrameKey(Store.state.spatialScene.frameKeys, f);
+                    if (nearest != null) {
+                        boxes = Store.state.tracksData[nearest] || Store.state.tracksData[String(nearest)] || [];
+                    }
+                }
 
                 // Calc scale
                 const scale = Math.min(r.width/v.videoWidth, r.height/v.videoHeight);
@@ -1208,3 +2066,5 @@
 </script>
 </body>
 </html>
+
+

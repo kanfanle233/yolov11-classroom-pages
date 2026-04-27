@@ -48,7 +48,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", type=str, required=True)
     parser.add_argument("--out", type=str, required=True)
-    parser.add_argument("--model", type=str, default="yolo11s.pt")
+    parser.add_argument("--model", type=str, default="yolo11x.pt")
 
     # 鉁?鍏抽敭锛氳浣犺兘澶嶇幇/璋冨弬
     parser.add_argument("--conf", type=float, default=0.10, help="confidence threshold (small objects寤鸿 0.08~0.15)")

@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -166,6 +167,27 @@ def active_mllm(rows: List[dict], t: float, topn: int = 3) -> List[dict]:
     return out[:topn]
 
 
+def _ffmpeg_supports_encoder(encoder_name: str) -> bool:
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        return False
+    try:
+        proc = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-encoders"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        if proc.returncode != 0:
+            return False
+        haystack = f"{proc.stdout}\n{proc.stderr}".lower()
+        return encoder_name.lower() in haystack
+    except Exception:
+        return False
+
+
 def main():
     base_dir = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser()
@@ -179,6 +201,10 @@ def main():
     parser.add_argument("--name", type=str, default="demo")
     parser.add_argument("--mux_audio", type=int, default=1)
     parser.add_argument("--out_video", type=str, default="")
+    parser.add_argument("--video_codec", type=str, default="auto")
+    parser.add_argument("--nvenc_preset", type=str, default="p4")
+    parser.add_argument("--x264_preset", type=str, default="fast")
+    parser.add_argument("--quality", type=str, default="23")
     args = parser.parse_args()
 
     video_path = Path(args.video)
@@ -312,31 +338,58 @@ def main():
 
     if int(args.mux_audio) == 1:
         try:
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(temp_video),
-                    "-i",
-                    str(video_path),
+            selected_codec = str(args.video_codec or "auto").strip().lower()
+            if selected_codec in {"", "auto"}:
+                selected_codec = "h264_nvenc" if _ffmpeg_supports_encoder("h264_nvenc") else "libx264"
+            if selected_codec not in {"libx264", "h264_nvenc"}:
+                selected_codec = "libx264"
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(temp_video),
+                "-i",
+                str(video_path),
+            ]
+            if selected_codec == "h264_nvenc":
+                ffmpeg_cmd += [
+                    "-c:v",
+                    "h264_nvenc",
+                    "-preset",
+                    str(args.nvenc_preset),
+                    "-cq",
+                    str(args.quality),
+                    "-b:v",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]
+            else:
+                ffmpeg_cmd += [
                     "-c:v",
                     "libx264",
                     "-crf",
-                    "23",
+                    str(args.quality),
                     "-preset",
-                    "fast",
+                    str(args.x264_preset),
                     "-pix_fmt",
                     "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "1:a:0",
-                    "-shortest",
-                    str(out_video),
-                ],
+                ]
+
+            ffmpeg_cmd += [
+                "-c:a",
+                "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-shortest",
+                str(out_video),
+            ]
+            print(f"[INFO] mux codec={selected_codec}")
+            subprocess.run(
+                ffmpeg_cmd,
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

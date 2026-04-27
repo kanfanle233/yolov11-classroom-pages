@@ -39,8 +39,9 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def _normalize_actions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_actions(rows: List[Dict[str, Any]], *, require_semantic: bool = False) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
+    missing_semantic = 0
     for row in rows:
         tid = row.get("track_id")
         if not isinstance(tid, int):
@@ -51,16 +52,31 @@ def _normalize_actions(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             st, ed = ed, st
         if ed <= st:
             ed = st + 0.2
+        has_semantic = bool(str(row.get("semantic_id", "")).strip()) and bool(str(row.get("behavior_code", "")).strip())
+        if require_semantic and not has_semantic:
+            missing_semantic += 1
+            continue
+        action_name = str(row.get("semantic_id", row.get("action", row.get("label", "")))).strip().lower()
         out.append(
             {
                 "track_id": tid,
-                "action": str(row.get("action", row.get("label", ""))).strip().lower(),
+                "action": action_name,
+                "raw_action": str(row.get("action", row.get("label", ""))).strip().lower(),
+                "behavior_code": str(row.get("behavior_code", "")).strip().lower(),
+                "behavior_label_zh": str(row.get("behavior_label_zh", "")).strip(),
+                "behavior_label_en": str(row.get("behavior_label_en", "")).strip(),
+                "semantic_id": str(row.get("semantic_id", action_name)).strip().lower(),
+                "semantic_label_zh": str(row.get("semantic_label_zh", "")).strip(),
+                "semantic_label_en": str(row.get("semantic_label_en", "")).strip(),
+                "taxonomy_version": str(row.get("taxonomy_version", "")).strip(),
                 "start_time": st,
                 "end_time": ed,
                 "action_confidence": _safe_float(row.get("conf", row.get("confidence", 0.5)), 0.5),
             }
         )
     out.sort(key=lambda x: (x["start_time"], x["track_id"]))
+    if require_semantic and missing_semantic > 0:
+        raise ValueError(f"semantic fields missing on {missing_semantic} action rows")
     return out
 
 
@@ -146,6 +162,7 @@ def main() -> None:
     parser.add_argument("--min_window", type=float, default=0.6)
     parser.add_argument("--max_window", type=float, default=4.0)
     parser.add_argument("--topk", type=int, default=8)
+    parser.add_argument("--require_semantic", type=int, default=0)
     args = parser.parse_args()
 
     event_path = Path(args.event_queries)
@@ -162,7 +179,7 @@ def main() -> None:
         out_path = (base_dir / out_path).resolve()
 
     queries = _load_jsonl(event_path)
-    actions = _normalize_actions(_load_jsonl(action_path))
+    actions = _normalize_actions(_load_jsonl(action_path), require_semantic=bool(int(args.require_semantic)))
     uq_index = _build_uq_index(_load_jsonl(uq_path))
 
     aligned: List[Dict[str, Any]] = []
@@ -191,6 +208,14 @@ def main() -> None:
                 {
                     "track_id": tid,
                     "action": a["action"],
+                    "raw_action": a["raw_action"],
+                    "behavior_code": a["behavior_code"],
+                    "behavior_label_zh": a["behavior_label_zh"],
+                    "behavior_label_en": a["behavior_label_en"],
+                    "semantic_id": a["semantic_id"],
+                    "semantic_label_zh": a["semantic_label_zh"],
+                    "semantic_label_en": a["semantic_label_en"],
+                    "taxonomy_version": a["taxonomy_version"],
                     "start_time": round(a["start_time"], 3),
                     "end_time": round(a["end_time"], 3),
                     "overlap": round(float(ov), 6),

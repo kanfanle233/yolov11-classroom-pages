@@ -109,6 +109,11 @@ def _pick_best_case_det_model(project_root: Path) -> Optional[Path]:
     candidates = [
         project_root / "models" / "best.pt",
         project_root / "runs" / "detect" / "case_yolo_train" / "weights" / "best.pt",
+        project_root / "yolo11x.pt",
+        project_root / "yolo11l.pt",
+        project_root / "yolo11m.pt",
+        project_root / "yolo11s.pt",
+        project_root / "yolo11n.pt",
     ]
     for cand in candidates:
         if cand.exists():
@@ -131,6 +136,7 @@ def _pick_best_case_det_model(project_root: Path) -> Optional[Path]:
 
 def _pick_best_pose_model(project_root: Path) -> Optional[Path]:
     candidates = [
+        project_root / "yolo11x-pose.pt",
         project_root / "yolo11l-pose.pt",
         project_root / "yolo11m-pose.pt",
         project_root / "yolo11s-pose.pt",
@@ -511,7 +517,7 @@ def run_single_video(
     dry_run: bool = False,
     skip_existing: bool = True,
     # case_det
-    case_det_model: str = "runs/detect/case_yolo_train/weights/best.pt",
+    case_det_model: str = "yolo11x.pt",
     case_conf: float = 0.25,
     case_det: int = 1,
     # toggles
@@ -535,7 +541,7 @@ def run_single_video(
     short_video: int = 0,
     log_dir: Optional[str] = None,
     # models
-    pose_model: str = "yolo11s-pose.pt",
+    pose_model: str = "yolo11x-pose.pt",
     asr_model: str = "base",
 ) -> Dict[str, Any]:
     project_root, scripts_dir, pipeline_dir, tools_dir = resolve_paths()
@@ -819,9 +825,9 @@ def main():
     parser.add_argument("--skip_existing", type=int, default=1)
 
     # models
-    parser.add_argument("--case_det_model", default="runs/detect/case_yolo_train/weights/best.pt")
+    parser.add_argument("--case_det_model", default="yolo11x.pt")
     parser.add_argument("--case_conf", type=float, default=0.25)
-    parser.add_argument("--pose_model", default="yolo11s-pose.pt")
+    parser.add_argument("--pose_model", default="yolo11x-pose.pt")
     parser.add_argument("--asr_model", default="base")
 
     # toggles

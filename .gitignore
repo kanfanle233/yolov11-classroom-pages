@@ -7,7 +7,7 @@ data/
 output/
 runs/
 models/
-
+docs/
 # Weights & media
 *.pt
 *.onnx

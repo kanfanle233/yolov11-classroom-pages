@@ -83,7 +83,7 @@ def build_training_samples(
         for c in candidates:
             if not isinstance(c, dict):
                 continue
-            action = str(c.get("action", ""))
+            action = str(c.get("semantic_id", c.get("action", "")))
             overlap = _safe_float(c.get("overlap", 0.0), 0.0)
             conf = _safe_float(c.get("action_confidence", c.get("confidence", c.get("conf", 0.0))), 0.0)
             uq = _safe_float(c.get("uq_score", c.get("uq_track", 0.5)), 0.5)

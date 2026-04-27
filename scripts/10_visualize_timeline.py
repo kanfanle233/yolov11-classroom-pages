@@ -1,5 +1,6 @@
 ﻿# scripts/10_visualize_timeline.py
 import argparse
+import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -8,34 +9,52 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch
 
+plt.rcParams["font.sans-serif"] = [
+    "Microsoft YaHei",
+    "SimHei",
+    "SimSun",
+    "Noto Sans CJK SC",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+]
+plt.rcParams["axes.unicode_minus"] = False
+
 
 ACTION_COLORS = {
-    0: "#2ecc71",  # listen
-    1: "#34495e",  # distract
-    2: "#e74c3c",  # phone
-    3: "#3498db",  # doze
-    4: "#e67e22",  # chat
-    5: "#9b59b6",  # note
-    6: "#f1c40f",  # raise_hand
-    7: "#1abc9c",  # stand
-    8: "#d35400",  # read
+    0: "#2ecc71",  # listen (tt)
+    1: "#34495e",  # turn_head (zt)
+    2: "#e74c3c",  # phone (legacy)
+    3: "#3498db",  # doze (legacy)
+    4: "#e67e22",  # group_discussion (xt)
+    5: "#9b59b6",  # write (dx)
+    6: "#f1c40f",  # raise_hand (js)
+    7: "#1abc9c",  # stand (zl)
+    8: "#d35400",  # read (dk)
+    9: "#8e44ad",  # teacher_interaction (jz)
 }
 
 ACTION_LABELS = {
-    0: "Listen",
-    1: "Distract",
-    2: "Phone",
-    3: "Doze",
-    4: "Chat",
-    5: "Note",
-    6: "Raise",
-    7: "Stand",
-    8: "Read",
+    0: "Listen/听课",
+    1: "Turn Head/转头",
+    2: "Phone/手机(旧)",
+    3: "Doze/瞌睡(旧)",
+    4: "Discuss/讨论",
+    5: "Write/写字",
+    6: "Raise Hand/举手",
+    7: "Stand/站立",
+    8: "Read/看书",
+    9: "Teacher Interaction/教师互动",
 }
 
 ACTION_STR_TO_ID = {
+    "tt": 0,
     "listening": 0,
     "listen": 0,
+    "head-up listening": 0,
+    "zt": 1,
+    "turn_head": 1,
+    "turning_head": 1,
+    "turning head": 1,
     "distract": 1,
     "playing_phone": 2,
     "phone": 2,
@@ -43,20 +62,68 @@ ACTION_STR_TO_ID = {
     "sleeping": 3,
     "doze": 3,
     "sleep": 3,
+    "xt": 4,
+    "group_discussion": 4,
+    "group discussion": 4,
     "chatting": 4,
     "chat": 4,
+    "dx": 5,
+    "write": 5,
     "writing": 5,
     "reading_writing": 5,
     "note": 5,
+    "js": 6,
     "raising_hand": 6,
     "raise_hand": 6,
     "raise": 6,
     "hand_raise": 6,
+    "zl": 7,
     "standing": 7,
     "stand": 7,
+    "dk": 8,
     "reading": 8,
     "read": 8,
     "book": 8,
+    "jz": 9,
+    "teacher_interaction": 9,
+    "teacher interaction": 9,
+    "teacher_guidance": 9,
+    "teacher guidance": 9,
+    "teacher_instruction": 9,
+}
+
+BEHAVIOR_CODE_TO_ID = {
+    "tt": 0,
+    "zt": 1,
+    "xt": 4,
+    "dx": 5,
+    "js": 6,
+    "zl": 7,
+    "dk": 8,
+    "jz": 9,
+}
+
+ACTION_ID_TO_SEMANTIC = {
+    0: {"behavior_code": "tt", "semantic_id": "listen", "semantic_label_zh": "听课", "semantic_label_en": "listen"},
+    1: {"behavior_code": "zt", "semantic_id": "turn_head", "semantic_label_zh": "转头", "semantic_label_en": "turn head"},
+    2: {"behavior_code": "zt", "semantic_id": "turn_head", "semantic_label_zh": "转头", "semantic_label_en": "turn head"},
+    3: {"behavior_code": "tt", "semantic_id": "listen", "semantic_label_zh": "听课", "semantic_label_en": "listen"},
+    4: {
+        "behavior_code": "xt",
+        "semantic_id": "group_discussion",
+        "semantic_label_zh": "小组讨论",
+        "semantic_label_en": "group discussion",
+    },
+    5: {"behavior_code": "dx", "semantic_id": "write", "semantic_label_zh": "写字", "semantic_label_en": "write"},
+    6: {"behavior_code": "js", "semantic_id": "raise_hand", "semantic_label_zh": "举手", "semantic_label_en": "raise hand"},
+    7: {"behavior_code": "zl", "semantic_id": "stand", "semantic_label_zh": "站立", "semantic_label_en": "stand"},
+    8: {"behavior_code": "dk", "semantic_id": "read", "semantic_label_zh": "看书", "semantic_label_en": "read"},
+    9: {
+        "behavior_code": "jz",
+        "semantic_id": "teacher_interaction",
+        "semantic_label_zh": "教师互动",
+        "semantic_label_en": "teacher interaction",
+    },
 }
 
 GROUP_COLORS = {
@@ -169,6 +236,13 @@ def _action_code(item: Dict[str, Any]) -> int:
         return _safe_int(item.get("corrected_action_code"), 0)
     if item.get("action_code") is not None:
         return _safe_int(item.get("action_code"), 0)
+    semantic_id = str(item.get("semantic_id", "")).strip().lower()
+    if semantic_id:
+        if semantic_id in ACTION_STR_TO_ID:
+            return ACTION_STR_TO_ID[semantic_id]
+    behavior_code = str(item.get("behavior_code", "")).strip().lower()
+    if behavior_code in BEHAVIOR_CODE_TO_ID:
+        return BEHAVIOR_CODE_TO_ID[behavior_code]
     label = str(item.get("action", item.get("label", ""))).strip().lower()
     return ACTION_STR_TO_ID.get(label, 0)
 
@@ -217,6 +291,102 @@ def _merge_segments(segments: List[Tuple[float, float, int]], gap_tol: float, mi
     return [(float(st), float(ed), int(code)) for st, ed, code in merged if (ed - st) >= min_dur]
 
 
+def _make_non_overlapping(segments: List[Tuple[float, float, int]], min_dur: float) -> List[Tuple[float, float, int]]:
+    out: List[Tuple[float, float, int]] = []
+    last_end = -1.0
+    for st, ed, code in sorted(segments, key=lambda x: (x[0], x[1])):
+        if st < last_end:
+            st = last_end
+        if ed - st < min_dur:
+            continue
+        out.append((float(st), float(ed), int(code)))
+        last_end = float(ed)
+    return out
+
+
+def _build_student_id_map(track_ids: List[Any]) -> Dict[str, Any]:
+    normalized: List[int] = []
+    for tid in track_ids:
+        try:
+            value = int(tid)
+        except Exception:
+            continue
+        if value >= 0 and value not in normalized:
+            normalized.append(value)
+    normalized.sort()
+    return {
+        "schema_version": "student_id_map_v1",
+        "student_count": len(normalized),
+        "students": [
+            {"student_id": f"S{idx + 1:02d}", "track_id": tid}
+            for idx, tid in enumerate(normalized)
+        ],
+    }
+
+
+def _student_id_lookup(student_map: Dict[str, Any]) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for row in student_map.get("students", []) or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            out[int(row.get("track_id"))] = str(row.get("student_id"))
+        except Exception:
+            continue
+    return out
+
+
+def _write_student_outputs(
+    *,
+    out_path: Path,
+    track_ids: List[Any],
+    rows: List[Dict[str, Any]],
+) -> None:
+    student_map = _build_student_id_map(track_ids)
+    lookup = _student_id_lookup(student_map)
+    map_path = out_path.parent / "student_id_map.json"
+    csv_path = out_path.parent / "timeline_students.csv"
+
+    with map_path.open("w", encoding="utf-8") as f:
+        json.dump(student_map, f, ensure_ascii=False, indent=2)
+
+    fieldnames = [
+        "student_id",
+        "track_id",
+        "start_time",
+        "end_time",
+        "behavior_code",
+        "semantic_label_zh",
+        "semantic_label_en",
+        "confidence",
+        "source",
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            try:
+                tid = int(row.get("track_id", -1))
+            except Exception:
+                tid = -1
+            writer.writerow(
+                {
+                    "student_id": lookup.get(tid, "UNMATCHED" if tid < 0 else f"ID_{tid}"),
+                    "track_id": tid,
+                    "start_time": row.get("start_time", row.get("start", "")),
+                    "end_time": row.get("end_time", row.get("end", "")),
+                    "behavior_code": row.get("behavior_code", ""),
+                    "semantic_label_zh": row.get("semantic_label_zh", ""),
+                    "semantic_label_en": row.get("semantic_label_en", ""),
+                    "confidence": row.get("confidence", row.get("conf", row.get("match_score", ""))),
+                    "source": row.get("source", ""),
+                }
+            )
+
+    print(f"[DONE] student id map: {map_path}")
+    print(f"[DONE] timeline students csv: {csv_path}")
+
+
 def draw_timeline(
     data: Dict[str, Any],
     out_path: Path,
@@ -228,8 +398,14 @@ def draw_timeline(
     min_dur: float,
     t_min: Optional[float],
     t_max: Optional[float],
+    student_track_max: int,
 ) -> None:
     people = _people_dict(data.get("people", {}))
+    people = {
+        pid: person
+        for pid, person in people.items()
+        if _safe_int(pid, 10**18) <= int(student_track_max)
+    }
     if not people:
         raise ValueError("No people found in source JSON")
 
@@ -267,7 +443,7 @@ def draw_timeline(
                 peer_marks.append(((st + ed) * 0.5, code))
             global_max_t = max(global_max_t, ed)
 
-        merged = _merge_segments(segs, gap_tol=gap_tol, min_dur=min_dur)
+        merged = _make_non_overlapping(_merge_segments(segs, gap_tol=gap_tol, min_dur=min_dur), min_dur=min_dur)
         if merged:
             per_person_segments[pid] = merged
             per_person_peer_marks[pid] = peer_marks
@@ -427,19 +603,41 @@ def draw_timeline(
 
     # Frontend JSON export
     frontend_items: List[Dict[str, Any]] = []
+    student_rows: List[Dict[str, Any]] = []
+    student_map = _build_student_id_map(person_ids)
+    student_lookup = _student_id_lookup(student_map)
     for pid in person_ids:
         row = row_index[pid]
         for st, ed, code in per_person_segments.get(pid, []):
+            semantic = ACTION_ID_TO_SEMANTIC.get(code, {})
+            try:
+                tid = int(pid)
+            except Exception:
+                tid = -1
             frontend_items.append(
                 {
                     "type": "person",
-                    "track_id": int(pid),
+                    "track_id": tid,
+                    "student_id": student_lookup.get(tid, f"ID_{tid}"),
                     "row": int(row),
                     "start": round(float(st), 3),
                     "end": round(float(ed), 3),
                     "action_id": int(code),
                     "action_label": ACTION_LABELS.get(code, "Unknown"),
+                    **semantic,
                     "color": ACTION_COLORS.get(code, "#333333"),
+                }
+            )
+            student_rows.append(
+                {
+                    "track_id": tid,
+                    "start_time": round(float(st), 3),
+                    "end_time": round(float(ed), 3),
+                    "behavior_code": semantic.get("behavior_code", ""),
+                    "semantic_label_zh": semantic.get("semantic_label_zh", ""),
+                    "semantic_label_en": semantic.get("semantic_label_en", ""),
+                    "confidence": 1.0,
+                    "source": "timeline_per_person",
                 }
             )
     for ev in group_events:
@@ -467,6 +665,7 @@ def draw_timeline(
     json_path = out_path.with_suffix(".json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump({"items": frontend_items}, f, ensure_ascii=False, indent=2)
+    _write_student_outputs(out_path=out_path, track_ids=person_ids, rows=student_rows)
 
     print(f"[DONE] timeline png: {out_path}")
     print(f"[DONE] timeline json: {json_path}")
@@ -495,6 +694,9 @@ def draw_verified_timeline(
     max_t = 1.0
 
     exported_items: List[Dict[str, Any]] = []
+    student_rows: List[Dict[str, Any]] = []
+    student_map = _build_student_id_map(track_ids)
+    student_lookup = _student_id_lookup(student_map)
     for row in verified_rows:
         tid = int(row.get("track_id", -1))
         y = row_index[tid]
@@ -534,6 +736,7 @@ def draw_verified_timeline(
             {
                 "type": "verified_event",
                 "track_id": tid,
+                "student_id": student_lookup.get(tid, "UNMATCHED" if tid < 0 else f"ID_{tid}"),
                 "start": round(st, 3),
                 "end": round(ed, 3),
                 "query_time": round(
@@ -550,11 +753,27 @@ def draw_verified_timeline(
                 ),
                 "query_id": row.get("query_id", row.get("event_id")),
                 "event_type": row.get("event_type"),
+                "behavior_code": row.get("behavior_code", ""),
+                "semantic_id": row.get("semantic_id", row.get("event_type", "")),
+                "semantic_label_zh": row.get("semantic_label_zh", ""),
+                "semantic_label_en": row.get("semantic_label_en", ""),
                 "label": label,
                 "reliability": round(reliability, 4),
                 "match_score": round(_safe_float(row.get("p_match", row.get("match_score", 0.0)), 0.0), 4),
                 "query_text": row.get("query_text", ""),
                 "color": color,
+            }
+        )
+        student_rows.append(
+            {
+                "track_id": tid,
+                "start_time": round(st, 3),
+                "end_time": round(ed, 3),
+                "behavior_code": row.get("behavior_code", ""),
+                "semantic_label_zh": row.get("semantic_label_zh", ""),
+                "semantic_label_en": row.get("semantic_label_en", ""),
+                "confidence": round(_safe_float(row.get("p_match", row.get("match_score", 0.0)), 0.0), 4),
+                "source": "verified_events",
             }
         )
 
@@ -580,6 +799,7 @@ def draw_verified_timeline(
     json_path = out_path.with_suffix(".json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump({"items": exported_items}, f, ensure_ascii=False, indent=2)
+    _write_student_outputs(out_path=out_path, track_ids=track_ids, rows=student_rows)
 
     print(f"[DONE] verified timeline png: {out_path}")
     print(f"[DONE] verified timeline json: {json_path}")
@@ -599,6 +819,7 @@ def main():
     parser.add_argument("--min_dur", type=float, default=0.35)
     parser.add_argument("--t_min", type=float, default=None)
     parser.add_argument("--t_max", type=float, default=None)
+    parser.add_argument("--student_track_max", type=int, default=99999)
     args = parser.parse_args()
 
     src = Path(args.src)
@@ -645,6 +866,7 @@ def main():
         min_dur=float(args.min_dur),
         t_min=args.t_min,
         t_max=args.t_max,
+        student_track_max=int(args.student_track_max),
     )
 
 

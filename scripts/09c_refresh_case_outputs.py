@@ -34,7 +34,6 @@ FORMAL_KEEP = {
 }
 
 LEGACY_NAMES = {
-    "align.json",
     "aligned_event_queries.jsonl",
     "contracts_report.json",
     "demo1_overlay.mp4",
@@ -133,11 +132,17 @@ def write_manifest(case_dir: Path, py_exe: str, cleanup_legacy: bool, rerun_uq: 
         path = case_dir / name
         if path.exists():
             artifacts[key] = str(path)
+    formal_alignment_path = case_dir / "align_multimodal.json"
+    legacy_alignment_path = case_dir / "align.json"
     payload = {
         "case_id": case_dir.name,
         "video_id": case_dir.name,
         "schema_version": SCHEMA_VERSION,
         "artifacts": artifacts,
+        "formal_alignment_file": str(formal_alignment_path) if formal_alignment_path.exists() else None,
+        "legacy_alignment_file": str(legacy_alignment_path) if legacy_alignment_path.exists() else None,
+        "alignment_used_for_paper": "align_multimodal.json",
+        "legacy_alignment_used_for_paper": False,
         "config_snapshot": {
             "refresh_existing_case": True,
             "cleanup_legacy": bool(cleanup_legacy),

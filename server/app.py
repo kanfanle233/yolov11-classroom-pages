@@ -347,6 +347,8 @@ def _case_dir_quality(case_dir: Path) -> int:
         score += 70
     if _is_nonempty_file(case_dir / "verified_events.jsonl", min_bytes=8):
         score += 60
+    if _is_nonempty_file(case_dir / "pipeline_manifest.json", min_bytes=8):
+        score += 45
     if _is_nonempty_file(case_dir / "pose_tracks_smooth.jsonl", min_bytes=16) or _is_nonempty_file(case_dir / "pose_tracks_smooth_uq.jsonl", min_bytes=16):
         score += 55
     if _is_nonempty_file(case_dir / "actions_fused.jsonl", min_bytes=8) or _is_nonempty_file(case_dir / "actions.jsonl", min_bytes=8):
@@ -361,6 +363,8 @@ def _case_dir_quality(case_dir: Path) -> int:
         ("pose_tracks_smooth.jsonl", 4_000_000, 30),
         ("pose_tracks_smooth_uq.jsonl", 4_000_000, 20),
         ("actions.jsonl", 200_000, 15),
+        ("actions.raw.jsonl", 200_000, 10),
+        ("actions.fusion_v2.jsonl", 200_000, 18),
         ("actions_fused.jsonl", 200_000, 20),
         ("timeline_viz.json", 50_000, 12),
         ("verified_events.jsonl", 80_000, 10),
@@ -387,6 +391,7 @@ def _looks_like_case_dir(case_dir: Path) -> bool:
     """Heuristic: a runnable case folder should contain at least one core pipeline artifact."""
     markers = [
         "timeline_chart.json",
+        "pipeline_manifest.json",
         "timeline_viz.json",
         "per_person_sequences.json",
         "verified_events.jsonl",
@@ -394,6 +399,8 @@ def _looks_like_case_dir(case_dir: Path) -> bool:
         "pose_tracks_smooth.jsonl",
         "pose_tracks_smooth_uq.jsonl",
         "actions.jsonl",
+        "actions.raw.jsonl",
+        "actions.fusion_v2.jsonl",
         "actions_fused.jsonl",
         "student_projection.json",
     ]
@@ -1435,10 +1442,21 @@ def get_case_manifest(video_id: str):
         raise HTTPException(404, f"Case not found: {video_id}")
 
     expected = [
-        "actions.jsonl", "actions_fused.jsonl", "transcript.jsonl", "pose_tracks_smooth.jsonl",
-        "pose_tracks_smooth_uq.jsonl", "event_queries.jsonl", "align_multimodal.json", "verified_events.jsonl",
-        "pose_demo_out.mp4", "objects_demo_out.mp4", "student_projection.json", "timeline_chart.json",
-        "timeline_chart.png", "group_events.jsonl", "per_person_sequences.json", "embeddings.pkl",
+        "pipeline_manifest.json",
+        "pose_keypoints_v2.jsonl", "pose_tracks_smooth.jsonl", "pose_tracks_smooth_uq.jsonl",
+        "objects.jsonl", "objects.semantic.jsonl", "behavior_det.jsonl", "behavior_det.semantic.jsonl",
+        "actions.raw.jsonl", "actions.jsonl", "actions_fused.jsonl", "actions.fusion_v2.jsonl",
+        "actions.behavior.jsonl", "actions.behavior.semantic.jsonl", "actions.behavior_aug.jsonl",
+        "transcript.jsonl", "asr_quality_report.json", "event_queries.jsonl",
+        "event_queries.visual_fallback.jsonl", "event_queries.fusion_v2.jsonl",
+        "align_multimodal.json", "verified_events.jsonl", "per_person_sequences.json",
+        "timeline_chart.json", "timeline_chart.png", "timeline_students.csv",
+        "student_projection.json", "group_events.jsonl", "embeddings.pkl",
+        "fusion_contract_report.json", "pipeline_contract_v2_report.json",
+        "verifier.pt", "verifier_samples.raw.jsonl", "verifier_samples_train.jsonl",
+        "verifier_report.raw.json", "verifier_eval_report.json",
+        "verifier_calibration_report.json", "verifier_reliability_diagram.svg",
+        "pose_demo_out.mp4", "objects_demo_out.mp4",
     ]
     files = []
     for name in expected:
@@ -1450,10 +1468,20 @@ def get_case_manifest(video_id: str):
             "url": _to_output_url(p) if p.exists() else None,
         })
 
+    schema_version = ""
+    pm = case_dir / "pipeline_manifest.json"
+    if pm.exists():
+        try:
+            obj = json.loads(pm.read_text(encoding="utf-8"))
+            schema_version = str(obj.get("schema_version", ""))
+        except Exception:
+            schema_version = ""
+
     return {
         "video_id": case_dir.name,
         "view": case_dir.parent.name if case_dir.parent != OUTPUT_DIR else "",
         "path": str(case_dir),
+        "schema_version": schema_version,
         "files": files,
         "ready_for_frontend": any(
             (f["name"] == "timeline_chart.json" and f["exists"])

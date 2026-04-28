@@ -4,17 +4,23 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Edu-Insight System (Tabbed Stats)</title>
-    <!-- D3.js v7 -->
-    <script src="https://cdn.bootcdn.net/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <!-- D3.js v7: local first, CDN fallback -->
+    <script src="/docs/vendor/d3/d3.v7.min.js"></script>
+    <script src="/docs/vendor/d3/d3-scale-chromatic.v3.min.js"></script>
+    <script>
+        if (!window.d3) {
+            document.write('<script src="https://d3js.org/d3.v7.min.js"><\/script>');
+        }
+    </script>
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
         /* ====== Design System (Light Theme) ====== */
         :root {
-            --bg-body: #f4f6f8;
+            --bg-body: #f8f9fa;
             --bg-panel: #ffffff;
             --bg-header: #ffffff;
-            --border: #e0e0e0;
+            --border: #e6e9ee;
 
             --text-main: #2c3e50;
             --text-dim: #7f8c8d;
@@ -24,33 +30,36 @@
             --accent-hover: #74b9ff;
             --highlight: #e17055;
             --selection: rgba(9, 132, 227, 0.1);
+            --card-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
         }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 0; padding: 0;
+            margin: 0; padding: 12px;
             background: var(--bg-body); color: var(--text-main);
             height: 100vh;
+            box-sizing: border-box;
             display: grid;
-            /* 鍘熷甯冨眬 Grid */
-            grid-template-columns: 200px 1fr 380px;
-            grid-template-rows: 50px 1fr 220px;
-            grid-template-areas: "header header header" "sidebar main stats" "sidebar bottom bottom";
-            overflow: hidden; gap: 1px;
+            grid-template-columns: 260px minmax(0, 1fr);
+            grid-template-rows: minmax(320px, 58vh) minmax(260px, 1fr);
+            grid-template-areas:
+                "sidebar video"
+                "sidebar main";
+            overflow: hidden;
+            gap: 12px;
         }
 
-        /* 婊氬姩鏉＄編鍖?*/
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        * { box-sizing: border-box; }
+
+        /* Slim scrollbars */
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: #bbb; }
+        ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.42); border-radius: 999px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.58); }
 
         /* Header */
         .area-header {
-            grid-area: header; background: var(--bg-header);
-            border-bottom: 1px solid var(--border);
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 0 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); z-index: 10;
+            display: none;
         }
         .brand { font-weight: 700; font-size: 16px; color: var(--text-main); letter-spacing: -0.5px; display:flex; align-items:center; gap:10px;}
         .brand i { color: var(--accent); font-size: 18px; }
@@ -58,67 +67,167 @@
         /* Sidebar */
         .area-sidebar {
             grid-area: sidebar; background: var(--bg-panel);
-            border-right: 1px solid var(--border);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
             display: flex; flex-direction: column; overflow-y: auto;
+            min-height: 0;
+        }
+        .sidebar-brand {
+            min-height: 48px;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            background: #fff;
+        }
+        .sidebar-brand .brand {
+            font-size: 13px;
+            letter-spacing: 0;
+        }
+        .server-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            color: #728191;
+            font-size: 10px;
+            white-space: nowrap;
+        }
+        .server-pill::before {
+            content: "";
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            background: #2ecc71;
         }
         .list-header {
-            padding: 14px 16px; background: #fafafa;
+            padding: 10px 14px; background: #fbfcfd;
             font-size: 11px; font-weight: 600; color: var(--text-dim);
             text-transform: uppercase; letter-spacing: 0.5px;
             border-bottom: 1px solid var(--border);
         }
         .list-item {
-            padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f0f0f0;
+            padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f1f3f5;
             font-size: 13px; color: var(--text-main); transition: all 0.2s;
             display: flex; align-items: center; gap: 8px;
         }
         .list-item:hover { background: #f8f9fa; color: var(--accent); }
         .list-item.active { background: #eaf4fc; color: var(--accent); border-right: 3px solid var(--accent); font-weight: 600; }
+        .artifact-panel {
+            padding: 10px 12px 14px;
+            border-top: 1px solid var(--border);
+            background: #fcfdff;
+            display: grid;
+            gap: 8px;
+        }
+        .artifact-chain {
+            display: grid;
+            gap: 5px;
+        }
+        .artifact-stage {
+            border: 1px solid #e6ebf1;
+            border-radius: 6px;
+            padding: 6px 7px;
+            background: #fff;
+        }
+        .artifact-stage-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #32485f;
+            line-height: 1.2;
+        }
+        .artifact-stage-title span:first-child {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .artifact-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ccd5df;
+            flex: 0 0 auto;
+        }
+        .artifact-status.ok { background: #2ecc71; }
+        .artifact-status.missing { background: #d8dee6; }
+        .artifact-files {
+            margin-top: 5px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .artifact-chip {
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+            padding: 2px 5px;
+            border-radius: 4px;
+            background: #f2f5f8;
+            color: #657487;
+            font-size: 10px;
+            line-height: 1.2;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .artifact-chip.ok {
+            background: #eaf7ef;
+            color: #1f8a4d;
+        }
+        .artifact-summary {
+            color: #7b8794;
+            font-size: 11px;
+            line-height: 1.35;
+        }
 
         /* Main Area */
-        .area-main { grid-area: main; background: #ffffff; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+        .area-main {
+            grid-area: main;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--card-shadow);
+            min-width: 0;
+            min-height: 0;
+        }
 
         /* Tabs */
-        .tab-bar { background:#ffffff; border-bottom:1px solid var(--border); display:flex; height: 44px; flex-shrink: 0; padding: 0 10px;}
+        .tab-bar {
+            background:#ffffff;
+            border-bottom:1px solid var(--border);
+            display:flex;
+            height: 46px;
+            flex-shrink: 0;
+            padding: 7px 10px;
+            justify-content: flex-end;
+            gap: 6px;
+            overflow-x: auto;
+            overflow-y: hidden;
+        }
         .tab-btn {
-            padding: 0 16px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-dim);
+            padding: 0 12px; cursor: pointer; font-size: 12px; font-weight: 650; color: #5f6f82;
             display: flex; align-items: center; gap: 6px; transition: all 0.2s; position: relative;
-            background: transparent; border: none; outline: none;
+            background: #f4f7fa; border: 1px solid #e3e9f0; outline: none;
+            border-radius: 8px;
+            white-space: nowrap;
+            flex: 0 0 auto;
         }
-        .tab-btn:hover { color: var(--accent); }
-        .tab-btn.active { color: var(--accent); font-weight: 600; }
-        .tab-btn.active::after {
-            content: ''; position: absolute; bottom: 0; left: 16px; right: 16px; height: 3px;
-            background: var(--accent); border-radius: 3px 3px 0 0;
-        }
+        .tab-btn:hover { color: var(--accent); background: #edf6ff; }
+        .tab-btn.active { color: #fff; font-weight: 700; background: var(--accent); border-color: var(--accent); }
 
-        .view-panel { flex:1; overflow:hidden; display:none; flex-direction:column; height: 100%; background: #fff; }
+        .view-panel { flex:1; overflow:hidden; display:none; flex-direction:column; height: 100%; background: #fff; min-height: 0; }
         .view-panel.active { display: flex; }
-
-        /* Stats Panel (Right Side) */
-        .area-stats {
-            grid-area: stats; background: #fcfcfc;
-            display: flex; flex-direction: column; overflow: hidden;
-            border-left: 1px solid var(--border);
-        }
-
-        /* Stats Header with Tabs */
-        .stats-header-bar {
-            height: 44px; background: #fff; border-bottom: 1px solid var(--border);
-            display: flex; align-items: center; padding: 0 10px; justify-content: space-between;
-        }
-        .stats-tabs { display: flex; gap: 4px; height: 100%; align-items: center; }
-        .stats-tab-btn {
-            padding: 6px 10px; font-size: 11px; font-weight: 600; color: var(--text-dim);
-            background: transparent; border: none; cursor: pointer; border-radius: 6px;
-            transition: all 0.2s;
-        }
-        .stats-tab-btn:hover { background: #f3f4f6; color: var(--text-main); }
-        .stats-tab-btn.active { background: #eaf4fc; color: var(--accent); }
-
-        /* Stats Content Views */
-        .stats-view-content { flex: 1; overflow-y: auto; display: none; padding: 0; flex-direction: column; }
-        .stats-view-content.active { display: flex; }
 
         /* Insight Content */
         .story-container { padding: 15px; }
@@ -204,19 +313,19 @@
             background: #fff;
         }
         .seat-panel {
-            flex: 0 0 58%;
-            min-height: 280px;
+            flex: 1;
+            min-height: 0;
             display: flex;
             flex-direction: column;
-            border-bottom: 1px solid var(--border);
             background: #fafafa;
         }
         .timeline-panel {
             flex: 1;
-            min-height: 220px;
+            min-height: 0;
             display: flex;
             flex-direction: column;
             background: #fff;
+            width: 100%;
         }
         .timeline-toolbar {
             padding: 8px 12px;
@@ -256,16 +365,32 @@
         }
 
         /* Bottom Area */
-        .area-bottom { grid-area: bottom; background: #ffffff; display: flex; border-top: 1px solid var(--border); }
+        .area-bottom {
+            grid-area: video;
+            background: #ffffff;
+            display: flex;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--card-shadow);
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
+        }
 
         .video-wrapper {
             flex: 1;
-            background: #000; display: flex; flex-direction: column; position: relative;
+            background: #000;
+            display: flex;
+            flex-direction: column-reverse;
+            position: relative;
             border-right: none;
+            border-radius: 8px;
+            overflow: hidden;
         }
         .video-controls {
-            height: 32px; background: #fff; border-bottom: 1px solid #eee;
+            height: 36px; background: #fff; border-top: 1px solid #e8edf3;
             display: flex; align-items: center; padding: 0 10px; gap: 6px;
+            flex-shrink: 0;
         }
         .v-btn {
             background: #f1f2f6; border: 1px solid transparent; color: #636e72;
@@ -273,14 +398,30 @@
         }
         .v-btn.active { background: var(--accent); color: #fff; }
         .v-btn.disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+        .local-file-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .local-file-btn input {
+            display: none;
+        }
+        .local-video-label {
+            max-width: 260px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #6b7b8f;
+            font-size: 11px;
+        }
 
-        .vid-container-inner { flex: 1; position: relative; background: #000; overflow: hidden; display: flex; justify-content: center; }
-        video { width: 100%; height: 100%; }
+        .vid-container-inner { flex: 1; min-height: 0; position: relative; background: #000; overflow: hidden; display: flex; justify-content: center; }
+        video { width: 100%; height: 100%; object-fit: contain; }
         #overlayCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
         /* Viz Wrapper (Gantt) */
         .viz-wrapper { flex: 1; display: flex; flex-direction: column; background: #fff; }
-        #gantt-container { flex: 1; position: relative; overflow: hidden; }
+        #gantt-container { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 
         .cursor-line { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--highlight); pointer-events: none; z-index: 50; display: none; }
 
@@ -326,30 +467,56 @@
 </head>
 <body>
 
-    <header class="area-header">
-        <div class="brand">
-            <i class="fa-solid fa-layer-group"></i>
-            <div>EDU-INSIGHT <span>SYSTEM</span></div>
-        </div>
-        <div style="font-size: 13px; color: var(--text-dim);"><span style="color:#2ecc71">&#9679;</span> Server Connected</div>
-    </header>
-
     <aside class="area-sidebar">
+        <div class="sidebar-brand">
+            <div class="brand">
+                <i class="fa-solid fa-layer-group"></i>
+                <div>EDU-INSIGHT</div>
+            </div>
+            <div class="server-pill">Online</div>
+        </div>
         <div class="list-header">Classroom Cases</div>
         <div id="video-list-container">
             <div class="empty-tip" style="padding:20px; text-align:center; color:#999;">Loading...</div>
+        </div>
+        <div class="list-header">Pipeline Artifacts</div>
+        <div id="artifact-panel" class="artifact-panel">
+            <div class="artifact-summary">Select a case to inspect the new pipeline outputs.</div>
         </div>
     </aside>
 
     <main class="area-main">
         <div class="tab-bar" id="tab-bar-container">
-            <button data-tab="projection" class="tab-btn active"><i class="fa-solid fa-chair"></i> Seat & Timeline</button>
+            <button data-tab="timeline" class="tab-btn active"><i class="fa-solid fa-chart-gantt"></i> Timeline Viz</button>
+            <button data-tab="projection" class="tab-btn"><i class="fa-solid fa-chair"></i> Seat Projection</button>
             <button data-tab="transcript" class="tab-btn"><i class="fa-solid fa-align-left"></i> Semantic Stream</button>
             <button data-tab="group" class="tab-btn"><i class="fa-solid fa-users"></i> Group Dynamics</button>
+            <button data-tab="insight" class="tab-btn"><i class="fa-regular fa-lightbulb"></i> Insight & Pattern</button>
+            <button data-tab="feature" class="tab-btn"><i class="fa-solid fa-chart-simple"></i> Feature Dist.</button>
+            <button id="btn-reset-filters" class="tab-btn" type="button"><i class="fa-solid fa-filter-circle-xmark"></i> Reset</button>
         </div>
 
-        <!-- View: Projection (Default) -->
-        <div id="view-projection" class="view-panel active">
+        <!-- View: Timeline (Default) -->
+        <div id="view-timeline" class="view-panel active">
+            <div class="timeline-panel">
+                <div class="timeline-toolbar">
+                    <strong style="letter-spacing:0.2px;">Timeline Viz</strong>
+                    <div class="timeline-mode-switch" id="timeline-mode-switch">
+                        <button class="timeline-mode-btn active" data-mode="swimlane">Swimlane</button>
+                        <button class="timeline-mode-btn" data-mode="heatmap">Heatmap</button>
+                    </div>
+                    <button id="btn-timeline-reset-zoom" class="ctrl-btn ctrl-btn-ghost">Reset Zoom</button>
+                    <span class="timeline-note">Aligned to the video above</span>
+                </div>
+                <div id="gantt-legend-bar"></div>
+                <div id="gantt-container">
+                    <div id="cursor-gantt" class="cursor-line"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- View: Projection -->
+        <div id="view-projection" class="view-panel">
             <div class="controls-bar">
                 <span style="font-weight:700;color:#23415e;">Seat Projection (Spatial)</span>
                 <select id="proj-metric" class="ctrl-select ctrl-hidden">
@@ -380,21 +547,6 @@
                         </div>
                     </div>
                 </div>
-                <div class="timeline-panel">
-                    <div class="timeline-toolbar">
-                        <strong style="letter-spacing:0.2px;">Timeline Viz</strong>
-                        <div class="timeline-mode-switch" id="timeline-mode-switch">
-                            <button class="timeline-mode-btn active" data-mode="swimlane">Swimlane</button>
-                            <button class="timeline-mode-btn" data-mode="heatmap">Day / Hour Heatmap</button>
-                        </div>
-                        <button id="btn-timeline-reset-zoom" class="ctrl-btn ctrl-btn-ghost">Reset Zoom</button>
-                        <span class="timeline-note">Brush to zoom in swimlane mode</span>
-                    </div>
-                    <div id="gantt-legend-bar"></div>
-                    <div id="gantt-container">
-                        <div id="cursor-gantt" class="cursor-line"></div>
-                    </div>
-                </div>
             </div>
         </div>
 
@@ -410,40 +562,29 @@
             </div>
         </div>
 
-        <div id="main-loading" class="loading-mask" style="display:none;">
-            <div class="spinner"></div>
-            <div>ANALYZING DATA...</div>
-        </div>
-    </main>
-
-    <!-- RIGHT PANEL: Tabbed Stats -->
-    <aside class="area-stats">
-        <div class="stats-header-bar">
-            <div class="stats-tabs">
-                <button class="stats-tab-btn active" data-target="insight"><i class="fa-regular fa-lightbulb"></i> Insight & Pattern</button>
-                <button class="stats-tab-btn" data-target="feature"><i class="fa-solid fa-chart-simple"></i> Feature Dist.</button>
-            </div>
-            <button id="btn-reset-filters" style="border:none; background:none; color:var(--accent); cursor:pointer; font-size:11px;">RESET</button>
-        </div>
-
-        <!-- View 1: Insight -->
-        <div id="stats-view-insight" class="stats-view-content active">
+        <!-- View: Insight -->
+        <div id="view-insight" class="view-panel">
             <div class="story-container" id="stat-list-content">
-                <div class="story-card" style="text-align:center; padding:40px 20px;">
-                    <i class="fa-regular fa-lightbulb" style="font-size:32px; color:#ddd; margin-bottom:15px;"></i>
+                <div class="story-card" style="text-align:center; padding:32px 20px;">
+                    <i class="fa-regular fa-lightbulb" style="font-size:28px; color:#ddd; margin-bottom:12px;"></i>
                     <div style="color:#777; font-size:14px;">Select a student from seat points or timeline bars to reveal behavior patterns.</div>
                 </div>
             </div>
         </div>
 
-        <!-- View 2: Features (Full Height PC) -->
-        <div id="stats-view-feature" class="stats-view-content">
-            <div style="padding:15px; font-size:11px; color:#999; border-bottom:1px solid #eee;">
+        <!-- View: Feature -->
+        <div id="view-feature" class="view-panel">
+            <div style="padding:12px 14px; font-size:11px; color:#7c8996; border-bottom:1px solid #edf1f5;">
                 MULTIDIMENSIONAL FEATURE ANALYSIS
             </div>
             <div id="pc-container"></div>
         </div>
-    </aside>
+
+        <div id="main-loading" class="loading-mask" style="display:none;">
+            <div class="spinner"></div>
+            <div>ANALYZING DATA...</div>
+        </div>
+    </main>
 
     <section class="area-bottom">
         <div class="video-wrapper">
@@ -452,8 +593,15 @@
                 <button class="v-btn active" data-mode="original">Original</button>
                 <button class="v-btn" data-mode="overlay">AI Overlay</button>
                 <button class="v-btn" data-mode="pose">Skeleton</button>
+                <label class="v-btn local-file-btn" title="Use a local MP4 only for playback. Pipeline outputs still come from the selected case.">
+                    <i class="fa-solid fa-upload"></i> Local MP4
+                    <input id="local-video-input" type="file" accept="video/mp4,video/*" />
+                </label>
+                <button id="btn-clear-local-video" class="v-btn disabled" title="Return to the selected case video">Clear Local</button>
+                <span id="local-video-label" class="local-video-label"></span>
                 <div style="flex:1"></div>
                 <span id="time-display" style="font-size:11px; color:#9aa7b6;">00:00</span>
+                <span id="frame-display" style="font-size:11px; color:#9aa7b6;">F0</span>
                 <button id="btn-bbox" class="v-btn"><i class="fa-solid fa-vector-square"></i> BBox</button>
             </div>
             <div class="vid-container-inner">
@@ -502,8 +650,16 @@
         chat: 4,
         note: 5,
         raise: 6,
+        raise_hand: 6,
+        hand_raise: 6,
         stand: 7,
-        read: 8
+        read: 8,
+        reading: 8,
+        writing: 5,
+        sit: 0,
+        sleep: 3,
+        bow_head: 1,
+        interact: 4
     };
 
     async function fetchJsonStrict(url) {
@@ -517,6 +673,40 @@
             throw new Error(`Non-JSON response for ${url}: ${preview}`);
         }
         return r.json();
+    }
+
+    async function fetchTextLoose(url) {
+        if (!url) return "";
+        const r = await fetch(url, { cache: "no-cache" });
+        if (!r.ok) return "";
+        return r.text();
+    }
+
+    function parseJsonlText(text) {
+        return String(text || "")
+            .split("\n")
+            .map(x => x.trim())
+            .filter(Boolean)
+            .map((line) => {
+                try { return JSON.parse(line); } catch (e) { return null; }
+            })
+            .filter(Boolean);
+    }
+
+    async function fetchJsonlLoose(url) {
+        const text = await fetchTextLoose(url);
+        return parseJsonlText(text);
+    }
+
+    async function fetchJsonLoose(url, fallback = null) {
+        if (!url) return fallback;
+        try {
+            const r = await fetch(url, { cache: "no-cache" });
+            if (!r.ok) return fallback;
+            return await r.json();
+        } catch (e) {
+            return fallback;
+        }
     }
 
     function getManifestCandidates() {
@@ -625,6 +815,86 @@
             return fetch(`${CONFIG.API_BASE}/media/${encodeURIComponent(caseId)}`).then(r => r.ok ? r.json() : null);
         },
 
+        async manifest(caseId) {
+            if (this.mode === "static") {
+                const c = this._caseById(caseId);
+                if (!c) return { files: [], ready_for_frontend: false };
+                const paths = c.paths || {};
+                const files = Object.entries(paths).map(([key, url]) => ({
+                    name: key,
+                    exists: Boolean(url),
+                    size: 0,
+                    url,
+                    role: key,
+                }));
+                return {
+                    video_id: c.video_id,
+                    view: c.view || "",
+                    path: c.path || "",
+                    files,
+                    ready_for_frontend: files.length > 0,
+                };
+            }
+            return fetchJsonStrict(`${CONFIG.API_BASE}/case/${encodeURIComponent(caseId)}/manifest`);
+        },
+
+        async fetchJsonl(url) {
+            return fetchJsonlLoose(url);
+        },
+
+        async loadArtifacts(caseId) {
+            const manifest = await this.manifest(caseId).catch(() => ({ files: [] }));
+            const files = Array.isArray(manifest?.files) ? manifest.files : [];
+            const byName = {};
+            files.forEach((f) => {
+                if (!f || !f.name) return;
+                byName[f.name] = f;
+                if (f.role && !byName[f.role]) byName[f.role] = f;
+            });
+
+            const urlFor = (...names) => {
+                for (const name of names) {
+                    const item = byName[name];
+                    if (item?.exists && item?.url) return item.url;
+                }
+                return null;
+            };
+
+            const [
+                pipelineManifest,
+                align,
+                eventQueries,
+                verifiedEvents,
+                verifierEval,
+                verifierCalibration,
+                objects,
+                behaviorDet,
+            ] = await Promise.all([
+                fetchJsonLoose(urlFor("pipeline_manifest.json", "pipeline_manifest"), {}),
+                fetchJsonLoose(urlFor("align_multimodal.json", "align_multimodal"), {}),
+                fetchJsonlLoose(urlFor("event_queries.jsonl", "event_queries")),
+                fetchJsonlLoose(urlFor("verified_events.jsonl", "verified_events")),
+                fetchJsonLoose(urlFor("verifier_eval_report.json", "verifier_eval_report"), {}),
+                fetchJsonLoose(urlFor("verifier_calibration_report.json", "verifier_calibration_report"), {}),
+                fetchJsonlLoose(urlFor("objects.jsonl", "objects")),
+                fetchJsonlLoose(urlFor("behavior_det.jsonl", "behavior_det")),
+            ]);
+
+            return {
+                manifest,
+                fileMap: byName,
+                urlFor,
+                pipelineManifest: pipelineManifest || {},
+                align: align || {},
+                eventQueries,
+                verifiedEvents,
+                verifierEval: verifierEval || {},
+                verifierCalibration: verifierCalibration || {},
+                objects,
+                behaviorDet,
+            };
+        },
+
         async timeline(caseId) {
             if (this.mode === 'static') {
                 const c = this._caseById(caseId);
@@ -701,13 +971,22 @@
             groupData: [],
             transcriptData: [],
             tracksData: {},
+            artifacts: null,
+            artifactFiles: {},
+            pipelineManifest: {},
+            alignData: {},
+            eventQueries: [],
+            verifiedEvents: [],
             projectionData: null,
             isLoading: false,
             videoDuration: 0,
             currentTime: 0,
+            currentFrame: 0,
             viewMode: "original",
             isBBoxEnabled: false,
             videoUrls: {},
+            localVideoUrl: null,
+            localVideoName: "",
             filteredIds: null,
             selectedTrackId: null,
             videoFrameDataUrl: null,
@@ -761,6 +1040,12 @@
             this.state.videoUrls = await resolveVideoUrls(caseId, this.state.caseMap[caseId]);
             this.state.videoFrameDataUrl = null;
             this.state.videoFrameSize = { w: 0, h: 0 };
+            this.state.artifacts = null;
+            this.state.artifactFiles = {};
+            this.state.pipelineManifest = {};
+            this.state.alignData = {};
+            this.state.eventQueries = [];
+            this.state.verifiedEvents = [];
             this.state.spatialScene = null;
             this.state.spatialSyncWithVideo = true;
             this.state.spatialManualFrame = 0;
@@ -769,12 +1054,20 @@
             this.state.timelineZoomRange = null;
 
             try {
-                const [tl, tr, trk, st] = await Promise.all([
+                const [tl, tr, trk, st, artifacts] = await Promise.all([
                     DataSource.timeline(caseId).catch(()=>({})),
                     DataSource.transcript(caseId).catch(()=>([])),
                     DataSource.tracks(caseId).catch(()=>({})),
-                    DataSource.stats(caseId).catch(()=>({}))
+                    DataSource.stats(caseId).catch(()=>({})),
+                    DataSource.loadArtifacts(caseId).catch(() => null)
                 ]);
+
+                this.state.artifacts = artifacts;
+                this.state.artifactFiles = artifacts?.fileMap || {};
+                this.state.pipelineManifest = artifacts?.pipelineManifest || {};
+                this.state.alignData = artifacts?.align || {};
+                this.state.eventQueries = Array.isArray(artifacts?.eventQueries) ? artifacts.eventQueries : [];
+                this.state.verifiedEvents = Array.isArray(artifacts?.verifiedEvents) ? artifacts.verifiedEvents : [];
 
                 // Normalize Timeline
                 const persons = [], groups = [];
@@ -884,7 +1177,9 @@
         },
 
         setSelection(id) {
-            this.state.selectedTrackId = (this.state.selectedTrackId === id) ? null : id;
+            const next = Number(id);
+            this.state.selectedTrackId = (Number(this.state.selectedTrackId) === next) ? null : next;
+            this.state._storyLastTime = -999;
             this.notify("selectionChanged");
         },
 
@@ -1236,6 +1531,127 @@
         }
     }
 
+    function escapeHtml(value) {
+        return String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+    }
+
+    function artifactExists(files, name) {
+        const f = files?.[name];
+        return Boolean(f && f.exists !== false && f.url);
+    }
+
+    function renderArtifactPanel(state) {
+        const panel = document.getElementById("artifact-panel");
+        if (!panel) return;
+        const files = state.artifactFiles || {};
+        const stages = [
+            { title: "pose/tracks", files: ["pose_keypoints_v2.jsonl", "pose_tracks_smooth.jsonl", "pose_tracks_smooth_uq.jsonl"] },
+            { title: "actions", files: ["actions.raw.jsonl", "actions.jsonl", "actions.fusion_v2.jsonl", "actions_fused.jsonl"] },
+            { title: "transcript", files: ["transcript.jsonl", "asr_quality_report.json"] },
+            { title: "event queries", files: ["event_queries.jsonl", "event_queries.fusion_v2.jsonl"] },
+            { title: "align", files: ["align_multimodal.json"] },
+            { title: "verified", files: ["verified_events.jsonl", "verifier_eval_report.json", "verifier_calibration_report.json"] },
+            { title: "timeline", files: ["timeline_chart.json", "timeline_chart.png", "per_person_sequences.json"] },
+        ];
+        const present = Object.values(files).filter(f => f?.exists && f?.url).length;
+        const total = Object.values(files).length || stages.flatMap(s => s.files).length;
+        const verified = Array.isArray(state.verifiedEvents) ? state.verifiedEvents : [];
+        const queries = Array.isArray(state.eventQueries) ? state.eventQueries : [];
+
+        const chain = stages.map((stage) => {
+            const ok = stage.files.some(name => artifactExists(files, name));
+            const chips = stage.files.map((name) => {
+                const exists = artifactExists(files, name);
+                return `<span class="artifact-chip ${exists ? "ok" : ""}" title="${escapeHtml(name)}">${exists ? "✓ " : ""}${escapeHtml(name.replace(".jsonl", "").replace(".json", ""))}</span>`;
+            }).join("");
+            return `
+                <div class="artifact-stage">
+                    <div class="artifact-stage-title">
+                        <span>${escapeHtml(stage.title)}</span>
+                        <span class="artifact-status ${ok ? "ok" : "missing"}"></span>
+                    </div>
+                    <div class="artifact-files">${chips}</div>
+                </div>
+            `;
+        }).join("");
+
+        const schema = state.pipelineManifest?.schema_version || state.artifacts?.manifest?.schema_version || "";
+        panel.innerHTML = `
+            <div class="artifact-summary">
+                <strong>${escapeHtml(state.currentCaseId || "No case")}</strong><br>
+                ${present}/${total} manifest files available${schema ? ` · schema ${escapeHtml(schema)}` : ""}<br>
+                ${queries.length} event queries · ${verified.length} verified events
+            </div>
+            <div class="artifact-chain">${chain}</div>
+        `;
+    }
+
+    function getActiveVerifiedEvents(state, time = state.currentTime) {
+        const t = Number(time || 0);
+        return (state.verifiedEvents || []).filter((row) => {
+            const st = Number(row.window_start ?? row.window?.start ?? row.start ?? row.query_time ?? 0);
+            const edRaw = Number(row.window_end ?? row.window?.end ?? row.end ?? row.query_time ?? st);
+            const ed = Number.isFinite(edRaw) && edRaw > st ? edRaw : st + 0.3;
+            return t >= st && t <= ed;
+        });
+    }
+
+    function getAlignCandidatesForEvent(state, eventId) {
+        if (!eventId) return [];
+        const rows = Array.isArray(state.alignData) ? state.alignData : [];
+        const row = rows.find(x => x?.event_id === eventId || x?.query_id === eventId);
+        return Array.isArray(row?.candidates) ? row.candidates : [];
+    }
+
+    function getPlaybackFps(state) {
+        const keys = getTrackFrameKeys(state);
+        const duration = Number(state.videoDuration || 0);
+        if (keys.length && duration > 0) {
+            const est = keys[keys.length - 1] / duration;
+            if (est > 8 && est < 120) return est;
+        }
+        return Math.max(1e-6, Number(state.spatialFps || 25));
+    }
+
+    function updateVideoClock(videoEl, mediaTime = null) {
+        if (!videoEl) return;
+        const rawTime = mediaTime == null ? videoEl.currentTime : mediaTime;
+        const t = Number(rawTime || 0);
+        const fps = getPlaybackFps(Store.state);
+        const frame = Math.max(0, Math.round(t * fps));
+        const sameFrame = Store.state.currentFrame === frame;
+        const sameTime = Math.abs(Number(Store.state.currentTime || 0) - t) < 0.005;
+        if (sameFrame && sameTime) return;
+        Store.state.currentTime = t;
+        Store.state.currentFrame = frame;
+        document.getElementById("time-display").innerText = formatTime(t);
+        const frameEl = document.getElementById("frame-display");
+        if (frameEl) frameEl.innerText = `F${frame}`;
+        Store.notify("timeUpdated", { frame, time: t });
+    }
+
+    function startVideoFrameSync(videoEl) {
+        if (!videoEl) return;
+        if ("requestVideoFrameCallback" in videoEl) {
+            const tick = (_now, metadata) => {
+                updateVideoClock(videoEl, metadata?.mediaTime);
+                videoEl.requestVideoFrameCallback(tick);
+            };
+            videoEl.requestVideoFrameCallback(tick);
+            return;
+        }
+        const loop = () => {
+            updateVideoClock(videoEl);
+            requestAnimationFrame(loop);
+        };
+        requestAnimationFrame(loop);
+    }
+
     function updateTimelineModeButtons(state) {
         document.querySelectorAll(".timeline-mode-btn").forEach((btn) => {
             btn.classList.toggle("active", btn.dataset.mode === state.timelineVizMode);
@@ -1244,6 +1660,20 @@
         const hasZoom = Array.isArray(state.timelineZoomRange) && state.timelineZoomRange.length === 2;
         resetBtn.disabled = !hasZoom;
         resetBtn.style.opacity = hasZoom ? "1" : "0.6";
+    }
+
+    function getTimelineDomain(state, data) {
+        const rows = Array.isArray(data) ? data : [];
+        const maxEndFromRows = d3.max(rows, d => Math.max(Number(d.end) || 0, Number(d.start) || 0)) || 0;
+        const maxEnd = Math.max(1, Number(state.videoDuration || 0), maxEndFromRows);
+        if (Array.isArray(state.timelineZoomRange) && state.timelineZoomRange.length === 2) {
+            const a = Math.max(0, Math.min(maxEnd, Number(state.timelineZoomRange[0]) || 0));
+            const b = Math.max(0, Math.min(maxEnd, Number(state.timelineZoomRange[1]) || maxEnd));
+            if (Math.abs(b - a) >= 0.4) {
+                return { domain: [Math.min(a, b), Math.max(a, b)], maxEnd };
+            }
+        }
+        return { domain: [0, maxEnd], maxEnd };
     }
 
     function renderTimelineView(state) {
@@ -1273,6 +1703,7 @@
         document.getElementById("tab-bar-container").addEventListener("click", e => {
             const btn = e.target.closest(".tab-btn");
             if(!btn) return;
+            if(!btn.dataset.tab) return;
             document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
             document.querySelectorAll(".view-panel").forEach(p => p.classList.remove("active"));
             btn.classList.add("active");
@@ -1281,23 +1712,18 @@
             if(btn.dataset.tab === 'projection' && !Store.state.projectionData && Store.state.currentCaseId) {
                 document.getElementById('btn-proj-apply').click();
             }
-        });
-
-        // 2. Stats Tab Switching (Right Panel)
-        document.querySelectorAll(".stats-tab-btn").forEach(btn => {
-            btn.addEventListener("click", () => {
-                document.querySelectorAll(".stats-tab-btn").forEach(b => b.classList.remove("active"));
-                document.querySelectorAll(".stats-view-content").forEach(c => c.classList.remove("active"));
-
-                btn.classList.add("active");
-                const target = btn.dataset.target;
-                document.getElementById(`stats-view-${target}`).classList.add("active");
-
-                // If switching to features, refresh chart size
-                if(target === 'feature') {
-                    renderPC(Store.state);
-                }
-            });
+            if(btn.dataset.tab === 'projection' && Store.state.projectionData) {
+                Store.notify("projectionLoaded");
+            }
+            if(btn.dataset.tab === 'timeline') {
+                renderTimelineView(Store.state);
+            }
+            if(btn.dataset.tab === 'feature') {
+                renderPC(Store.state);
+            }
+            if(btn.dataset.tab === 'insight') {
+                renderStory(Store.state);
+            }
         });
 
         // Sidebar click
@@ -1366,7 +1792,11 @@
 
         // Video setup
         const v = document.getElementById("myVideo");
-        v.addEventListener("loadedmetadata", () => Store.state.videoDuration = v.duration);
+        v.addEventListener("loadedmetadata", () => {
+            Store.state.videoDuration = v.duration;
+            updateVideoClock(v);
+            updateSpatialControls(Store.state);
+        });
         v.addEventListener("loadeddata", () => {
             const snap = captureVideoSnapshot(v);
             if (snap) {
@@ -1378,9 +1808,32 @@
             }
         });
         v.addEventListener("timeupdate", () => {
-            Store.state.currentTime = v.currentTime;
-            Store.notify("timeUpdated");
-            document.getElementById("time-display").innerText = formatTime(v.currentTime);
+            updateVideoClock(v);
+        });
+        startVideoFrameSync(v);
+
+        const localInput = document.getElementById("local-video-input");
+        const clearLocalBtn = document.getElementById("btn-clear-local-video");
+        const localLabel = document.getElementById("local-video-label");
+        localInput.addEventListener("change", (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            if (Store.state.localVideoUrl) URL.revokeObjectURL(Store.state.localVideoUrl);
+            Store.state.localVideoUrl = URL.createObjectURL(file);
+            Store.state.localVideoName = file.name;
+            Store.state.viewMode = "original";
+            const wasPlaying = !v.paused;
+            v.src = Store.state.localVideoUrl;
+            v.load();
+            v.onloadeddata = () => { if (wasPlaying) v.play().catch(() => {}); };
+            if (localLabel) localLabel.textContent = `Local: ${file.name}`;
+            if (clearLocalBtn) clearLocalBtn.classList.remove("disabled");
+            document.querySelectorAll(".v-btn[data-mode]").forEach(b => b.classList.remove("active"));
+            const originalBtn = document.querySelector('.v-btn[data-mode="original"]');
+            if (originalBtn) {
+                originalBtn.classList.remove("disabled");
+                originalBtn.classList.add("active");
+            }
         });
 
         // View Mode
@@ -1390,8 +1843,29 @@
             if(btn.id === 'btn-bbox') {
                 Store.state.isBBoxEnabled = !Store.state.isBBoxEnabled;
                 btn.classList.toggle("active", Store.state.isBBoxEnabled);
+            } else if(btn.id === 'btn-clear-local-video') {
+                if (!Store.state.localVideoUrl) return;
+                URL.revokeObjectURL(Store.state.localVideoUrl);
+                Store.state.localVideoUrl = null;
+                Store.state.localVideoName = "";
+                if (localInput) localInput.value = "";
+                if (localLabel) localLabel.textContent = "";
+                btn.classList.add("disabled");
+                const fallback = Store.state.videoUrls.original || "";
+                if (fallback) {
+                    v.src = fallback;
+                    v.load();
+                } else {
+                    v.removeAttribute("src");
+                    v.load();
+                }
+                document.querySelectorAll(".v-btn[data-mode]").forEach(b => b.classList.remove("active"));
+                const originalBtn = document.querySelector('.v-btn[data-mode="original"]');
+                if (originalBtn && fallback) originalBtn.classList.add("active");
             } else if(btn.dataset.mode) {
-                const url = Store.state.videoUrls[btn.dataset.mode];
+                const url = btn.dataset.mode === "original"
+                    ? (Store.state.localVideoUrl || Store.state.videoUrls.original)
+                    : Store.state.videoUrls[btn.dataset.mode];
                 if(!url) {
                     console.warn("Video not found for mode:", btn.dataset.mode, Store.state.videoUrls);
                     return;
@@ -1439,6 +1913,7 @@
         document.getElementById("projection-chart").innerHTML = '';
         document.getElementById("stat-list-content").innerHTML = '';
         document.getElementById("transcript-box").innerHTML = '';
+        document.getElementById("artifact-panel").innerHTML = '<div class="artifact-summary">Loading artifacts...</div>';
         updateSpatialControls(Store.state);
     });
 
@@ -1449,31 +1924,36 @@
         document.querySelectorAll(".list-item").forEach(el =>
             el.classList.toggle("active", el.dataset.id === state.currentCaseId)
         );
-        if(state.videoUrls.original) {
-            const v = document.getElementById("myVideo");
-            v.src = state.videoUrls.original;
+        const v = document.getElementById("myVideo");
+        const preferredVideo = state.localVideoUrl || state.videoUrls.original || "";
+        if(preferredVideo) {
+            v.src = preferredVideo;
             v.load();
         } else {
-            const v = document.getElementById("myVideo");
             v.removeAttribute("src");
             v.load();
         }
 
         document.querySelectorAll(".v-btn[data-mode]").forEach((btn) => {
             const mode = btn.dataset.mode;
-            const available = Boolean(state.videoUrls[mode]);
+            const available = mode === "original" ? Boolean(state.localVideoUrl || state.videoUrls.original) : Boolean(state.videoUrls[mode]);
             btn.classList.toggle("disabled", !available);
             btn.classList.remove("active");
         });
         const originalBtn = document.querySelector('.v-btn[data-mode="original"]');
-        if (originalBtn && state.videoUrls.original) {
+        if (originalBtn && (state.videoUrls.original || state.localVideoUrl)) {
             originalBtn.classList.add("active");
         }
+        const clearLocalBtn = document.getElementById("btn-clear-local-video");
+        const localLabel = document.getElementById("local-video-label");
+        if (clearLocalBtn) clearLocalBtn.classList.toggle("disabled", !state.localVideoUrl);
+        if (localLabel) localLabel.textContent = state.localVideoName ? `Local: ${state.localVideoName}` : "";
 
         renderTimelineView(state);
         renderTranscript(state);
         renderGroup(state);
         renderPC(state); // Build parallel coords
+        renderArtifactPanel(state);
 
         // Initial story
         document.getElementById("stat-list-content").innerHTML = `
@@ -1552,6 +2032,8 @@
         // Highlight Gantt
         d3.selectAll(".gantt-bar")
             .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.1 : 1);
+        d3.selectAll(".verified-marker")
+            .style("opacity", d => (state.selectedTrackId && d.tid !== state.selectedTrackId) ? 0.15 : 0.95);
         d3.selectAll(".timeline-cell")
             .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.22 : 1);
 
@@ -1581,8 +2063,15 @@
 
         // Generate data for story
         const actions = state.timelineData.filter(d => d.track_id === tid);
+        const rawVerifiedForTrack = (state.verifiedEvents || [])
+            .filter(row => Number(row.track_id) === Number(tid))
+            .sort((a, b) => Number(a.query_time || a.window_start || 0) - Number(b.query_time || b.window_start || 0));
         if(!actions.length) {
-            container.innerHTML = `<div class="story-card" style="text-align:center; padding:28px 20px;"><div style="color:#97a6b4;">Student #${tid} has no timeline segments in current data source.</div></div>`;
+            container.innerHTML = `
+                <div class="story-card" style="text-align:center; padding:28px 20px;">
+                    <div style="color:#97a6b4;">Student #${tid} has no timeline segments in current data source.</div>
+                    <div class="story-text" style="margin-top:8px;">Verifier rows: ${rawVerifiedForTrack.length}</div>
+                </div>`;
             return;
         }
 
@@ -1603,6 +2092,36 @@
 
         // Find interaction
         const interactDur = (counts[4]||0) + (counts[6]||0) + (counts[7]||0); // Chat, Raise, Stand
+        const verifiedForTrack = rawVerifiedForTrack;
+        const activeVerified = getActiveVerifiedEvents(state)
+            .filter(row => Number(row.track_id) === Number(tid));
+        const labelColor = (label) => {
+            if (label === "match") return "#2ecc71";
+            if (label === "uncertain") return "#f39c12";
+            return "#e74c3c";
+        };
+        const verifiedHtml = verifiedForTrack.slice(0, 5).map((row) => {
+            const label = String(row.match_label || row.label || "mismatch");
+            const eventId = row.event_id || row.query_id;
+            const candidates = getAlignCandidatesForEvent(state, eventId).slice(0, 3)
+                .map(c => `#${escapeHtml(c.track_id)} ${escapeHtml(c.action || "")}`)
+                .join(", ");
+            const qt = Number(row.query_time ?? row.window_start ?? 0);
+            const rel = Number(row.reliability_score ?? row.reliability ?? 0);
+            return `
+                <div style="border-top:1px solid #eef1f4; padding:7px 0; font-size:12px;">
+                    <div style="display:flex; justify-content:space-between; gap:8px;">
+                        <b style="color:${labelColor(label)}">${escapeHtml(label)}</b>
+                        <span style="color:#8b98a7">${formatTime(qt)} · ${(rel * 100).toFixed(0)}%</span>
+                    </div>
+                    <div style="color:#40566d; margin-top:3px;">${escapeHtml(row.query_text || row.event_type || eventId || "")}</div>
+                    ${candidates ? `<div style="color:#8794a3; margin-top:3px;">align: ${candidates}</div>` : ""}
+                </div>
+            `;
+        }).join("");
+        const activeHtml = activeVerified.length
+            ? `<div style="margin-top:8px; padding:7px; border-radius:6px; background:#fff7e8; color:#75531a; font-size:12px;">Current window: ${activeVerified.map(x => escapeHtml(x.event_id || x.query_id || x.label)).join(", ")}</div>`
+            : "";
 
         // Construct Story HTML
         let mood = "Neutral";
@@ -1643,6 +2162,12 @@
                         return `<div style="position:absolute; left:${left}%; width:${width}%; top:0; bottom:0; background:${col}"></div>`;
                     }).join('')}
                 </div>
+            </div>
+
+            <div class="story-card">
+                <div class="story-title" style="font-size:13px;">Verified Event Evidence</div>
+                ${activeHtml}
+                ${verifiedHtml || `<div class="story-text">No verifier rows are linked to Student #${tid}.</div>`}
             </div>
         `;
         container.innerHTML = html;
@@ -1698,6 +2223,33 @@
                 Store.setSelection(d.track_id);
                 document.getElementById("myVideo").currentTime = Number(d.start) || 0;
             });
+
+        const verifiedMarkers = (state.verifiedEvents || [])
+            .map((row) => {
+                const tid = Number(row.track_id);
+                const qt = Number(row.query_time ?? row.window_start ?? row.window?.start ?? 0);
+                const label = String(row.match_label || row.label || "mismatch");
+                return { ...row, tid, qt, label, row: rowIndex.get(tid) };
+            })
+            .filter(d => Number.isFinite(d.tid) && d.row != null && d.qt >= domain[0] && d.qt <= domain[1]);
+        const markerColor = (label) => label === "match" ? "#2ecc71" : label === "uncertain" ? "#f39c12" : "#e74c3c";
+        svg.selectAll("circle.verified-marker")
+            .data(verifiedMarkers)
+            .enter().append("circle")
+            .attr("class", "verified-marker")
+            .attr("cx", d => x(d.qt))
+            .attr("cy", d => margin.top + d.row * rowH + rowH * 0.5)
+            .attr("r", d => d.label === "match" ? 4 : 3)
+            .attr("fill", d => markerColor(d.label))
+            .attr("stroke", "#fff")
+            .attr("stroke-width", 1.2)
+            .style("opacity", d => (state.selectedTrackId && Number(state.selectedTrackId) !== Number(d.tid)) ? 0.15 : 0.95)
+            .on("click", (e, d) => {
+                Store.setSelection(d.tid);
+                document.getElementById("myVideo").currentTime = Number(d.qt) || 0;
+            })
+            .append("title")
+            .text(d => `${d.label} · ${d.event_id || d.query_id || ""}\n${d.query_text || ""}`);
 
         svg.selectAll("text.gantt-row-label")
             .data(tracks)
@@ -1970,12 +2522,15 @@
         const c = document.getElementById("transcript-box");
         c.innerHTML = "";
         state.transcriptData.forEach((t, i) => {
+            const label = t.verification_label || (t.verified ? "match" : "");
+            const rel = Number(t.reliability || 0);
+            const badge = label ? `<span style="font-size:10px; color:${label === "match" ? "#2ecc71" : label === "uncertain" ? "#f39c12" : "#e74c3c"};">${escapeHtml(label)} ${(rel * 100).toFixed(0)}%</span>` : "";
             c.innerHTML += `
                 <div class="transcript-line" data-start="${t.start}" onclick="document.getElementById('myVideo').currentTime=${t.start}">
                     <div class="ts-meta">${formatTime(t.start)}</div>
                     <div class="ts-content">
-                        <div class="ts-name">Speaker</div>
-                        <div class="ts-text">${t.text}</div>
+                        <div class="ts-name">Speaker ${badge}</div>
+                        <div class="ts-text">${escapeHtml(t.text)}</div>
                     </div>
                 </div>
             `;
@@ -2010,6 +2565,10 @@
         if (state.projectionData?.metric === "spatial" && state.spatialSyncWithVideo) {
             updateSpatialProjectionFrame(state);
         }
+        if (state.selectedTrackId && Math.abs(Number(state._storyLastTime ?? -999) - t) > 0.5) {
+            state._storyLastTime = t;
+            renderStory(state);
+        }
     });
 
     // Canvas Loop
@@ -2021,16 +2580,20 @@
         const v = document.getElementById("myVideo");
         if(v.videoWidth) {
             const r = v.getBoundingClientRect();
-            if(canvas.width !== r.width) { canvas.width=r.width; canvas.height=r.height; }
+            if(canvas.width !== Math.round(r.width) || canvas.height !== Math.round(r.height)) {
+                canvas.width = Math.round(r.width);
+                canvas.height = Math.round(r.height);
+            }
             ctx.clearRect(0,0,r.width,r.height);
 
             // Draw BBoxes
             if(Store.state.isBBoxEnabled || Store.state.selectedTrackId) {
-                const fps = Math.max(1e-6, Number(Store.state.spatialFps || 25));
+                const fps = getPlaybackFps(Store.state);
                 const f = Math.round(v.currentTime * fps);
                 let boxes = Store.state.tracksData[f] || Store.state.tracksData[String(f)] || [];
-                if ((!boxes || !boxes.length) && Store.state.spatialScene?.frameKeys?.length) {
-                    const nearest = nearestFrameKey(Store.state.spatialScene.frameKeys, f);
+                if ((!boxes || !boxes.length)) {
+                    const keys = Store.state.spatialScene?.frameKeys?.length ? Store.state.spatialScene.frameKeys : getTrackFrameKeys(Store.state);
+                    const nearest = nearestFrameKey(keys, f);
                     if (nearest != null) {
                         boxes = Store.state.tracksData[nearest] || Store.state.tracksData[String(nearest)] || [];
                     }
@@ -2042,20 +2605,22 @@
                 const oy = (r.height - v.videoHeight*scale)/2;
 
                 boxes.forEach(b => {
-                    if(Store.state.filteredIds && !Store.state.filteredIds.has(b.id)) return;
-                    if(!Store.state.isBBoxEnabled && b.id !== Store.state.selectedTrackId) return;
+                    const id = Number(b.id);
+                    if(Store.state.filteredIds && !Store.state.filteredIds.has(id)) return;
+                    if(!Store.state.isBBoxEnabled && id !== Number(Store.state.selectedTrackId)) return;
 
-                    const isSel = b.id === Store.state.selectedTrackId;
+                    const isSel = id === Number(Store.state.selectedTrackId);
                     ctx.strokeStyle = isSel ? "#e17055" : "rgba(9, 132, 227, 0.6)";
                     ctx.lineWidth = isSel ? 3 : 2;
 
-                    const [x1,y1,x2,y2] = b.box;
+                    const [x1,y1,x2,y2] = b.box || [];
+                    if (![x1,y1,x2,y2].every(Number.isFinite)) return;
                     ctx.strokeRect(ox + x1*scale, oy + y1*scale, (x2-x1)*scale, (y2-y1)*scale);
 
                     if(isSel) {
                         ctx.fillStyle = "#e17055";
                         ctx.font = "bold 12px sans-serif";
-                        ctx.fillText(`ID:${b.id}`, ox + x1*scale, oy + y1*scale - 5);
+                        ctx.fillText(`ID:${id}`, ox + x1*scale, oy + y1*scale - 5);
                     }
                 });
             }

@@ -60,6 +60,20 @@ PAPER_TABLE_DIR = (DOCS_DIR / "assets" / "tables" / "paper_d3_selected").resolve
 PAPER_CHART_DIR = (DOCS_DIR / "assets" / "charts" / "paper_d3_selected").resolve()
 PAPER_VIDEO_DIR = (DOCS_DIR / "assets" / "videos").resolve()
 ASSETS_DIR = (DOCS_DIR / "assets").resolve()
+YOLO_PAPER_DIR = (PROJECT_ROOT / "YOLO论文").resolve()
+YOLO_PAPER_PACKAGE_DIR = (YOLO_PAPER_DIR / "paper_package_20260426").resolve()
+YOLO_PAPER_DEMO_DIR = (YOLO_PAPER_PACKAGE_DIR / "06_demo_materials").resolve()
+PAPER_MAINLINE_OUTPUT_DIR = (
+    OUTPUT_DIR / "codex_reports" / "run_full_paper_mainline_001" / "full_integration_001"
+).resolve()
+PAPER_MAINLINE_CASE_ID = "paper_mainline_20260426"
+PAPER_MAINLINE_ALIASES = {
+    PAPER_MAINLINE_CASE_ID,
+    "paper_mainline",
+    "paper_demo_20260426",
+    "paper_package_20260426",
+    "run_full_paper_mainline_001",
+}
 
 # 浣犵殑鍓嶇妯℃澘涓€鑸湪 web_viz/templates锛涘鏋滄病鏈夊氨鍥為€€鍒伴」鐩牴鐩綍
 TEMPLATE_DIR = (PROJECT_ROOT / "web_viz" / "templates")
@@ -108,20 +122,55 @@ if DOCS_DIR.exists():
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
+if YOLO_PAPER_DIR.exists():
+    app.mount("/yolo_paper", StaticFiles(directory=str(YOLO_PAPER_DIR)), name="yolo_paper")
+
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+
+def _paper_case_candidates() -> List[Path]:
+    candidates = [PAPER_MAINLINE_OUTPUT_DIR, YOLO_PAPER_DEMO_DIR]
+    out: List[Path] = []
+    for p in candidates:
+        try:
+            if p.exists() and p.is_dir() and _looks_like_case_dir(p):
+                out.append(p)
+        except Exception:
+            continue
+    return out
+
+
+def _find_paper_case_dir(video_id: str) -> Optional[Path]:
+    vid = str(video_id or "").strip()
+    if not vid:
+        return None
+    if vid in PAPER_MAINLINE_ALIASES:
+        candidates = _paper_case_candidates()
+        return candidates[0] if candidates else None
+
+    if YOLO_PAPER_DIR.exists():
+        direct = YOLO_PAPER_DIR / vid
+        if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
+            return direct
+        for candidate in YOLO_PAPER_DIR.rglob(vid):
+            if candidate.is_dir() and _looks_like_case_dir(candidate):
+                return candidate
+    return None
 
 
 def _find_case_dir(video_id: str) -> Optional[Path]:
     """Find case directory by exact folder name, supporting nested view/case layout."""
-    if not OUTPUT_DIR.exists():
-        return None
     candidates: List[Path] = []
-    direct = OUTPUT_DIR / video_id
-    if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
-        candidates.append(direct)
-    for candidate in OUTPUT_DIR.rglob(video_id):
-        if candidate.is_dir() and _looks_like_case_dir(candidate):
-            candidates.append(candidate)
+    paper_case = _find_paper_case_dir(video_id)
+    if paper_case is not None:
+        candidates.append(paper_case)
+    if OUTPUT_DIR.exists():
+        direct = OUTPUT_DIR / video_id
+        if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
+            candidates.append(direct)
+        for candidate in OUTPUT_DIR.rglob(video_id):
+            if candidate.is_dir() and _looks_like_case_dir(candidate):
+                candidates.append(candidate)
     if not candidates:
         return None
     uniq = list(dict.fromkeys(candidates))
@@ -129,12 +178,15 @@ def _find_case_dir(video_id: str) -> Optional[Path]:
 
 
 def _find_case_dir_for_analysis(video_id: str) -> Optional[Path]:
-    direct = OUTPUT_DIR / video_id
     candidates: List[Path] = []
-    if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
-        candidates.append(direct)
+    paper_case = _find_paper_case_dir(video_id)
+    if paper_case is not None:
+        candidates.append(paper_case)
 
     if OUTPUT_DIR.exists():
+        direct = OUTPUT_DIR / video_id
+        if direct.exists() and direct.is_dir() and _looks_like_case_dir(direct):
+            candidates.append(direct)
         for candidate in OUTPUT_DIR.rglob(video_id):
             if candidate.is_dir() and _looks_like_case_dir(candidate):
                 candidates.append(candidate)
@@ -171,12 +223,20 @@ def _to_assets_url(path: Path) -> Optional[str]:
     return f"/assets/{rel.as_posix()}"
 
 
+def _to_yolo_paper_url(path: Path) -> Optional[str]:
+    try:
+        rel = path.resolve().relative_to(YOLO_PAPER_DIR.resolve())
+    except Exception:
+        return None
+    return f"/yolo_paper/{rel.as_posix()}"
+
+
 def _path_to_public_url(path: Optional[Path]) -> Optional[str]:
     if path is None:
         return None
     if not path.exists():
         return None
-    for fn in (_to_output_url, _to_assets_url, _to_docs_url, _to_data_url):
+    for fn in (_to_output_url, _to_assets_url, _to_docs_url, _to_yolo_paper_url, _to_data_url):
         try:
             u = fn(path)  # type: ignore[misc]
         except Exception:
@@ -301,13 +361,28 @@ def _find_output_original_video_path(case_dir: Path, video_id: str, case_id: str
 
 
 def _find_dataset_original_video_path(view_name: str, case_id: str) -> Optional[Path]:
+    search_dirs: List[Path] = []
     view_dir = _resolve_dataset_view_dir(view_name)
-    if view_dir is None:
-        return None
-    for stem in _candidate_case_stems(case_id):
-        p = view_dir / f"{stem}.mp4"
-        if p.exists():
-            return p
+    if view_dir is not None:
+        search_dirs.append(view_dir)
+    else:
+        root = _guess_dataset_root()
+        if root is not None:
+            for mapped in _VIEW_TO_DATA_SUBDIR.values():
+                p = root / mapped
+                if p.exists() and p.is_dir():
+                    search_dirs.append(p)
+
+    seen: set[str] = set()
+    for view_dir in search_dirs:
+        key = str(view_dir.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        for stem in _candidate_case_stems(case_id):
+            p = view_dir / f"{stem}.mp4"
+            if p.exists():
+                return p
     return None
 
 
@@ -318,13 +393,51 @@ def _resolve_overlay_video_path(video_id: str, case_dir: Path) -> Optional[Path]
     return _find_docs_video_path(video_id, "overlay")
 
 
+def _case_metadata_video_candidates(case_dir: Path) -> Tuple[List[Path], List[str]]:
+    video_paths: List[Path] = []
+    case_ids: List[str] = []
+
+    def _push_case_id(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in case_ids:
+            case_ids.append(text)
+
+    for meta_name in ("pipeline_manifest.json", "asr_quality_report.json"):
+        meta_path = case_dir / meta_name
+        if not meta_path.exists():
+            continue
+        try:
+            obj = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        _push_case_id(obj.get("case_id"))
+        _push_case_id(obj.get("video_id"))
+        raw_video = obj.get("video") or obj.get("input_video")
+        if isinstance(raw_video, str) and raw_video.strip():
+            p = Path(raw_video)
+            if p.exists() and p.is_file():
+                video_paths.append(p)
+
+    return video_paths, case_ids
+
+
 def _resolve_original_video_path(video_id: str, case_dir: Path) -> Optional[Path]:
     view_name, case_id = _extract_case_tokens(video_id, case_dir)
     p = _find_output_original_video_path(case_dir, video_id, case_id)
+    metadata_video_paths, metadata_case_ids = _case_metadata_video_candidates(case_dir)
+    if p is None and metadata_video_paths:
+        p = metadata_video_paths[0]
     if p is None:
         p = _find_docs_video_path(video_id, "original")
     if p is None:
         p = _find_dataset_original_video_path(view_name, case_id)
+    if p is None:
+        for meta_case_id in metadata_case_ids:
+            p = _find_dataset_original_video_path(view_name, meta_case_id)
+            if p is not None:
+                break
     if p is None:
         p = _resolve_overlay_video_path(video_id, case_dir)
     return p if p and p.exists() else None
@@ -337,8 +450,117 @@ def _is_nonempty_file(path: Path, min_bytes: int = 1) -> bool:
         return False
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _case_pipeline_status(case_dir: Path) -> Dict[str, Any]:
+    manifest = _read_json_file(case_dir / "pipeline_manifest.json", {})
+    config = manifest.get("config_snapshot", {}) if isinstance(manifest, dict) else {}
+    artifacts = manifest.get("artifacts", {}) if isinstance(manifest, dict) else {}
+    if not isinstance(config, dict):
+        config = {}
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+
+    behavior_model = str(
+        config.get("behavior_det_model")
+        or manifest.get("behavior_det_model", "") if isinstance(manifest, dict) else ""
+    )
+    object_model = str(config.get("det_model") or config.get("object_model") or "")
+    behavior_model_norm = behavior_model.replace("\\", "/").lower()
+    object_model_norm = object_model.replace("\\", "/").lower()
+
+    pipeline_report = _read_json_file(case_dir / "pipeline_contract_v2_report.json", {})
+    fusion_report = _read_json_file(case_dir / "fusion_contract_report.json", {})
+    pipeline_counts = pipeline_report.get("counts", {}) if isinstance(pipeline_report, dict) else {}
+    fusion_counts = fusion_report.get("counts", {}) if isinstance(fusion_report, dict) else {}
+    counts = pipeline_counts if isinstance(pipeline_counts, dict) and pipeline_counts else fusion_counts
+    if not isinstance(counts, dict):
+        counts = {}
+
+    has_actions_v2 = _is_nonempty_file(case_dir / "actions.fusion_v2.jsonl", min_bytes=8)
+    has_events_v2 = _is_nonempty_file(case_dir / "event_queries.fusion_v2.jsonl", min_bytes=8)
+    has_verified = _is_nonempty_file(case_dir / "verified_events.jsonl", min_bytes=8)
+    has_behavior_semantic = _is_nonempty_file(case_dir / "behavior_det.semantic.jsonl", min_bytes=8)
+    has_timeline_students = _is_nonempty_file(case_dir / "timeline_students.csv", min_bytes=16)
+    has_student_map = _is_nonempty_file(case_dir / "student_id_map.json", min_bytes=16)
+    has_timeline_json = _is_nonempty_file(case_dir / "timeline_chart.json", min_bytes=8)
+
+    uses_finetuned_behavior_model = (
+        "official_yolo11s_detect_e150_v1" in behavior_model_norm
+        or ("yolo11s" in behavior_model_norm and "/weights/best.pt" in behavior_model_norm)
+    )
+    uses_old_object_only_model = bool(object_model_norm) and "yolo11x.pt" in object_model_norm and not uses_finetuned_behavior_model
+    fusion_v2_ready = (
+        _truthy(config.get("fusion_contract_v2"))
+        or bool(artifacts.get("actions_fusion_v2"))
+        or (has_actions_v2 and has_events_v2)
+    )
+    timeline_ready = has_timeline_json and has_timeline_students and has_student_map
+    contract_status = str(pipeline_report.get("status") or fusion_report.get("status") or "").lower()
+    contract_ok = contract_status in {"ok", "pass", "passed"} or (
+        _is_nonempty_file(case_dir / "pipeline_contract_v2_report.json", min_bytes=8)
+        and contract_status != "failed"
+    )
+    mainline_ready = (
+        uses_finetuned_behavior_model
+        and fusion_v2_ready
+        and has_actions_v2
+        and has_events_v2
+        and has_verified
+        and has_behavior_semantic
+        and contract_ok
+    )
+
+    reason = ""
+    if not mainline_ready:
+        missing: List[str] = []
+        if not uses_finetuned_behavior_model:
+            missing.append("fine_tuned_yolo11s_behavior_model")
+        if not fusion_v2_ready:
+            missing.append("fusion_v2")
+        if not has_actions_v2:
+            missing.append("actions.fusion_v2.jsonl")
+        if not has_events_v2:
+            missing.append("event_queries.fusion_v2.jsonl")
+        if not has_verified:
+            missing.append("verified_events.jsonl")
+        if not has_behavior_semantic:
+            missing.append("behavior_det.semantic.jsonl")
+        if not contract_ok:
+            missing.append("pipeline_contract_v2")
+        reason = ", ".join(missing)
+
+    return {
+        "behavior_model": behavior_model,
+        "object_model": object_model,
+        "uses_finetuned_behavior_model": uses_finetuned_behavior_model,
+        "uses_old_object_only_model": uses_old_object_only_model,
+        "fusion_v2_ready": fusion_v2_ready,
+        "mainline_ready": mainline_ready,
+        "timeline_ready": timeline_ready,
+        "contract_status": contract_status or ("ok" if contract_ok else ""),
+        "legacy_reason": reason,
+        "counts": counts,
+        "warnings": pipeline_report.get("warnings", []) if isinstance(pipeline_report, dict) else [],
+    }
+
+
 def _case_dir_quality(case_dir: Path) -> int:
     score = 0
+    status = _case_pipeline_status(case_dir)
+    if status.get("mainline_ready"):
+        score += 320
+    elif status.get("uses_finetuned_behavior_model"):
+        score += 160
+    if status.get("fusion_v2_ready"):
+        score += 90
+    if status.get("timeline_ready"):
+        score += 45
     if _is_nonempty_file(case_dir / "timeline_chart.json", min_bytes=8):
         score += 120
     if _is_nonempty_file(case_dir / "timeline_viz.json", min_bytes=8):
@@ -349,10 +571,16 @@ def _case_dir_quality(case_dir: Path) -> int:
         score += 60
     if _is_nonempty_file(case_dir / "pose_tracks_smooth.jsonl", min_bytes=16) or _is_nonempty_file(case_dir / "pose_tracks_smooth_uq.jsonl", min_bytes=16):
         score += 55
+    if _is_nonempty_file(case_dir / "actions.fusion_v2.jsonl", min_bytes=8):
+        score += 50
+    if _is_nonempty_file(case_dir / "event_queries.fusion_v2.jsonl", min_bytes=8):
+        score += 40
     if _is_nonempty_file(case_dir / "actions_fused.jsonl", min_bytes=8) or _is_nonempty_file(case_dir / "actions.jsonl", min_bytes=8):
         score += 35
     if _is_nonempty_file(case_dir / "transcript.jsonl", min_bytes=8):
         score += 25
+    if _is_nonempty_file(case_dir / "pipeline_contract_v2_report.json", min_bytes=8) or _is_nonempty_file(case_dir / "fusion_contract_report.json", min_bytes=8):
+        score += 20
     if _is_nonempty_file(case_dir / "student_projection.json", min_bytes=8) or _is_nonempty_file(case_dir / "static_projection.json", min_bytes=8):
         score += 15
 
@@ -360,6 +588,7 @@ def _case_dir_quality(case_dir: Path) -> int:
     for fn, cap, weight in [
         ("pose_tracks_smooth.jsonl", 4_000_000, 30),
         ("pose_tracks_smooth_uq.jsonl", 4_000_000, 20),
+        ("actions.fusion_v2.jsonl", 200_000, 25),
         ("actions.jsonl", 200_000, 15),
         ("actions_fused.jsonl", 200_000, 20),
         ("timeline_viz.json", 50_000, 12),
@@ -391,10 +620,15 @@ def _looks_like_case_dir(case_dir: Path) -> bool:
         "per_person_sequences.json",
         "verified_events.jsonl",
         "event_queries.jsonl",
+        "event_queries.fusion_v2.jsonl",
         "pose_tracks_smooth.jsonl",
         "pose_tracks_smooth_uq.jsonl",
         "actions.jsonl",
         "actions_fused.jsonl",
+        "actions.fusion_v2.jsonl",
+        "pipeline_manifest.json",
+        "pipeline_contract_v2_report.json",
+        "fusion_contract_report.json",
         "student_projection.json",
     ]
     return any(_is_nonempty_file(case_dir / m, min_bytes=2) for m in markers)
@@ -521,12 +755,20 @@ def _timeline_from_verified_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         if ed <= st:
             ed = st + 0.3
         label = str(row.get("match_label", row.get("label", "mismatch")))
-        if label == "match":
-            action_id = 0
-        elif label == "uncertain":
-            action_id = 1
-        else:
-            action_id = 2
+        action_name = "unknown"
+        for key in ("semantic_id", "action", "event_type"):
+            candidate = _normalize_action_name(row.get(key, ""))
+            if candidate in _ACTION_NAME_TO_ID:
+                action_name = candidate
+                break
+        action_id = _parse_action_id(action_name, row.get("action_id", -1))
+        if action_id < 0:
+            if label == "match":
+                action_id = 0
+            elif label == "uncertain":
+                action_id = 1
+            else:
+                action_id = 2
         items.append(
             {
                 "type": "verified_event",
@@ -534,12 +776,18 @@ def _timeline_from_verified_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "start": st,
                 "end": ed,
                 "action_id": action_id,
-                "action_label": label,
+                "action": action_name,
+                "action_label": row.get("semantic_label_en") or row.get("event_type") or label,
+                "verification_label": label,
+                "match_label": label,
                 "query_id": row.get("query_id", row.get("event_id")),
                 "event_type": row.get("event_type"),
                 "query_text": row.get("query_text"),
                 "reliability": float(row.get("reliability_score", row.get("reliability", 0.0))),
                 "match_score": float(row.get("p_match", row.get("match_score", 0.0))),
+                "semantic_id": row.get("semantic_id"),
+                "semantic_label_zh": row.get("semantic_label_zh"),
+                "semantic_label_en": row.get("semantic_label_en"),
                 "row": int(row.get("track_id", -1)),
             }
         )
@@ -559,8 +807,16 @@ _ACTION_NAME_TO_ID: Dict[str, int] = {
 }
 
 
-def _parse_action_id(action_name: Any, fallback: Any = None) -> int:
+def _normalize_action_name(action_name: Any) -> str:
     name = str(action_name or "").strip().lower()
+    if "/" in name:
+        name = name.split("/", 1)[0].strip()
+    name = name.replace("-", "_").replace(" ", "_")
+    return name
+
+
+def _parse_action_id(action_name: Any, fallback: Any = None) -> int:
+    name = _normalize_action_name(action_name)
     if name in _ACTION_NAME_TO_ID:
         return _ACTION_NAME_TO_ID[name]
     try:
@@ -580,7 +836,14 @@ def _timeline_from_actions_rows(rows: List[Dict[str, Any]], fps: float = 25.0) -
         if tid < 0:
             continue
 
-        action_name = str(row.get("action", row.get("action_label", "listen"))).strip().lower()
+        action_name = "unknown"
+        for key in ("semantic_id", "fused_action", "action", "raw_action", "action_label", "event_type"):
+            candidate = _normalize_action_name(row.get(key, ""))
+            if candidate in _ACTION_NAME_TO_ID:
+                action_name = candidate
+                break
+            if candidate and action_name == "unknown":
+                action_name = candidate
         action_id = _parse_action_id(action_name, row.get("action_id", -1))
 
         st = _safe_float(row.get("start", row.get("start_time", row.get("window_start", 0.0))), 0.0)
@@ -602,6 +865,13 @@ def _timeline_from_actions_rows(rows: List[Dict[str, Any]], fps: float = 25.0) -
                 "end": float(ed),
                 "action_id": int(action_id),
                 "action": action_name,
+                "student_id": row.get("student_id"),
+                "behavior_code": row.get("behavior_code"),
+                "semantic_id": row.get("semantic_id"),
+                "semantic_label_zh": row.get("semantic_label_zh"),
+                "semantic_label_en": row.get("semantic_label_en"),
+                "conf": _safe_float(row.get("conf", row.get("fused_conf", row.get("raw_conf", 0.0))), 0.0),
+                "source": row.get("source"),
                 "duration": float(ed - st),
                 "row": tid,
             }
@@ -706,7 +976,7 @@ def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
     if p1.exists():
         try:
             data = json.loads(p1.read_text(encoding="utf-8"))
-            _push_timeline(data, priority=20)
+            _push_timeline(data, priority=90)
         except Exception:
             pass
 
@@ -714,7 +984,7 @@ def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
     if p_viz.exists():
         try:
             data = json.loads(p_viz.read_text(encoding="utf-8"))
-            _push_timeline(data, priority=40)
+            _push_timeline(data, priority=85)
         except Exception:
             pass
 
@@ -722,7 +992,7 @@ def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
     if p2.exists():
         try:
             data = json.loads(p2.read_text(encoding="utf-8"))
-            _push_timeline(data, priority=30)
+            _push_timeline(data, priority=80)
         except Exception:
             pass
 
@@ -735,17 +1005,23 @@ def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
         except Exception:
             continue
 
+    p_actions_fusion_v2 = case_dir / "actions.fusion_v2.jsonl"
+    if p_actions_fusion_v2.exists():
+        rows = _load_jsonl_rows(p_actions_fusion_v2)
+        if rows:
+            _push_timeline(_timeline_from_actions_rows(rows, fps=fps), priority=70)
+
     p_actions_fused = case_dir / "actions_fused.jsonl"
     if p_actions_fused.exists():
         rows = _load_jsonl_rows(p_actions_fused)
         if rows:
-            _push_timeline(_timeline_from_actions_rows(rows, fps=fps), priority=60)
+            _push_timeline(_timeline_from_actions_rows(rows, fps=fps), priority=65)
 
     p_actions = case_dir / "actions.jsonl"
     if p_actions.exists():
         rows = _load_jsonl_rows(p_actions)
         if rows:
-            _push_timeline(_timeline_from_actions_rows(rows, fps=fps), priority=55)
+            _push_timeline(_timeline_from_actions_rows(rows, fps=fps), priority=60)
 
     p3 = case_dir / "verified_events.jsonl"
     if p3.exists():
@@ -754,7 +1030,7 @@ def load_timeline_data_cached(video_id: str) -> Optional[Dict[str, Any]]:
             _push_timeline(_timeline_from_verified_rows(rows), priority=10)
 
     if candidates:
-        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        candidates.sort(key=lambda x: (x[1], x[0]), reverse=True)
         return candidates[0][2]
 
     return None
@@ -1289,10 +1565,14 @@ def list_cases():
     """
     鑷姩鎵弿 output 鐩綍锛屽憡璇夊墠绔湁鍝簺 demo 鍙敤锛堝吋瀹逛綘 txt 鐨?Flask 鎺ュ彛锛?:contentReference[oaicite:6]{index=6}
     """
-    if not OUTPUT_DIR.exists():
-        return []
+    def _listable_case_dir(d: Path) -> bool:
+        low = d.as_posix().lower()
+        if "/_tmp" in low or "/cache/" in low or "/__pycache__/" in low:
+            return False
+        return _looks_like_case_dir(d)
+
     # 閫掑綊鎵弿鈥滅湡姝ｇ殑 case 鐩綍鈥濓紝閬垮厤鎶娾€滄暀甯堣瑙?鏂滀笂鏂硅瑙?鈥濊繖绉嶈瑙掔埗鐩綍璇綋鎴?case銆?
-    case_dirs = [d for d in OUTPUT_DIR.rglob("*") if d.is_dir() and _looks_like_case_dir(d)]
+    case_dirs = [d for d in OUTPUT_DIR.rglob("*") if d.is_dir() and _listable_case_dir(d)] if OUTPUT_DIR.exists() else []
     cases: List[Dict[str, Any]] = []
     for case_dir in case_dirs:
         rel_parts = case_dir.relative_to(OUTPUT_DIR).parts
@@ -1302,12 +1582,31 @@ def list_cases():
             view_name = rel_parts[-2]
         video_id = case_dir.name
         original_path = _resolve_original_video_path(video_id, case_dir)
+        pipeline_status = _case_pipeline_status(case_dir)
         cases.append({
             "view": view_name,
             "video_id": video_id,
             "case_id": video_id.split("__")[-1],
             "path": str(case_dir),
             "has_original_video": bool(original_path is not None),
+            "ready_for_frontend": _looks_like_case_dir(case_dir),
+            **pipeline_status,
+        })
+
+    paper_case_dir = _find_paper_case_dir(PAPER_MAINLINE_CASE_ID)
+    if paper_case_dir is not None:
+        original_path = _resolve_original_video_path(PAPER_MAINLINE_CASE_ID, paper_case_dir)
+        pipeline_status = _case_pipeline_status(paper_case_dir)
+        cases.append({
+            "view": "paper",
+            "video_id": PAPER_MAINLINE_CASE_ID,
+            "case_id": "001",
+            "path": str(paper_case_dir),
+            "has_original_video": bool(original_path is not None),
+            "ready_for_frontend": True,
+            "paper_package": True,
+            "label": "Paper Mainline 20260426",
+            **pipeline_status,
         })
 
     # 鍘婚噸锛堝悓鍚?video_id 鍙兘鍑虹幇鍦ㄤ笉鍚岀紦瀛樼洰褰曪級
@@ -1327,7 +1626,14 @@ def list_cases():
 
     return sorted(
         list(uniq.values()),
-        key=lambda x: (str(x.get("view", "")) == "", str(x.get("view", "")), str(x.get("video_id", ""))),
+        key=lambda x: (
+            not bool(x.get("paper_package")),
+            not bool(x.get("mainline_ready")),
+            not bool(x.get("fusion_v2_ready")),
+            str(x.get("view", "")) == "",
+            str(x.get("view", "")),
+            str(x.get("video_id", "")),
+        ),
     )
 
 
@@ -1398,21 +1704,22 @@ def get_media(video_id: str):
     original_path = _resolve_original_video_path(video_id, case_dir)
     original_url = f"/api/media/{video_id}/original" if original_path and original_path.exists() else None
 
+    def _u(name: str) -> Optional[str]:
+        return _path_to_public_url(case_dir / name)
+
     payload = {
-        "video_id": case_dir.name,
+        "video_id": video_id,
         "view": view_name,
         "case_id": case_id,
         "original": original_url,
         "overlay": overlay_url,
-        "pose_demo": _to_output_url(case_dir / "pose_demo_out.mp4") if (case_dir / "pose_demo_out.mp4").exists() else None,
-        "objects_demo": _to_output_url(case_dir / "objects_demo_out.mp4") if (case_dir / "objects_demo_out.mp4").exists() else None,
-        "timeline_png": _to_output_url(case_dir / "timeline_chart.png") if (case_dir / "timeline_chart.png").exists() else None,
-        "projection_json": _to_output_url(case_dir / "student_projection.json") if (case_dir / "student_projection.json").exists() else None,
-        "verified_events": _to_output_url(case_dir / "verified_events.jsonl") if (case_dir / "verified_events.jsonl").exists() else None,
-        "event_queries": _to_output_url(case_dir / "event_queries.jsonl") if (case_dir / "event_queries.jsonl").exists() else None,
-        "actions": _to_output_url(case_dir / "actions_fused.jsonl") if (case_dir / "actions_fused.jsonl").exists() else (
-            _to_output_url(case_dir / "actions.jsonl") if (case_dir / "actions.jsonl").exists() else None
-        ),
+        "pose_demo": _u("pose_demo_out.mp4"),
+        "objects_demo": _u("objects_demo_out.mp4"),
+        "timeline_png": _u("timeline_chart.png"),
+        "projection_json": _u("student_projection.json"),
+        "verified_events": _u("verified_events.jsonl"),
+        "event_queries": _u("event_queries.fusion_v2.jsonl") or _u("event_queries.jsonl"),
+        "actions": _u("actions.fusion_v2.jsonl") or _u("actions_fused.jsonl") or _u("actions.jsonl"),
     }
     return payload
 
@@ -1435,29 +1742,59 @@ def get_case_manifest(video_id: str):
         raise HTTPException(404, f"Case not found: {video_id}")
 
     expected = [
-        "actions.jsonl", "actions_fused.jsonl", "transcript.jsonl", "pose_tracks_smooth.jsonl",
-        "pose_tracks_smooth_uq.jsonl", "event_queries.jsonl", "align_multimodal.json", "verified_events.jsonl",
+        "pipeline_manifest.json",
+        "pose_keypoints_v2.jsonl", "pose_tracks_smooth.jsonl", "pose_tracks_smooth_uq.jsonl",
+        "objects.jsonl", "objects.semantic.jsonl",
+        "behavior_det.jsonl", "behavior_det.semantic.jsonl",
+        "actions.raw.jsonl", "actions.jsonl", "actions_fused.jsonl",
+        "actions.behavior.jsonl", "actions.behavior.semantic.jsonl", "actions.fusion_v2.jsonl",
+        "transcript.jsonl", "asr_quality_report.json",
+        "event_queries.jsonl", "event_queries.visual_fallback.jsonl", "event_queries.fusion_v2.jsonl",
+        "align_multimodal.json", "verified_events.jsonl",
+        "fusion_contract_report.json", "pipeline_contract_v2_report.json",
+        "verifier_eval_report.json", "verifier_calibration_report.json", "verifier_reliability_diagram.svg",
         "pose_demo_out.mp4", "objects_demo_out.mp4", "student_projection.json", "timeline_chart.json",
-        "timeline_chart.png", "group_events.jsonl", "per_person_sequences.json", "embeddings.pkl",
+        "timeline_viz.json", "timeline_chart.png", "timeline_students.csv", "student_id_map.json",
+        "group_events.jsonl", "per_person_sequences.json", "embeddings.pkl",
     ]
+
+    def _artifact_path(name: str) -> Path:
+        p = case_dir / name
+        if p.exists():
+            return p
+        try:
+            if case_dir.resolve() == YOLO_PAPER_DEMO_DIR.resolve():
+                metrics_p = YOLO_PAPER_PACKAGE_DIR / "03_metrics_tables" / name
+                if metrics_p.exists():
+                    return metrics_p
+        except Exception:
+            pass
+        return p
+
     files = []
     for name in expected:
-        p = case_dir / name
+        p = _artifact_path(name)
         files.append({
             "name": name,
             "exists": p.exists(),
             "size": int(p.stat().st_size) if p.exists() else 0,
-            "url": _to_output_url(p) if p.exists() else None,
+            "url": _path_to_public_url(p) if p.exists() else None,
         })
 
+    pipeline_status = _case_pipeline_status(case_dir)
     return {
-        "video_id": case_dir.name,
-        "view": case_dir.parent.name if case_dir.parent != OUTPUT_DIR else "",
+        "schema_version": "frontend_manifest_v2",
+        "video_id": video_id,
+        "resolved_case_dir": case_dir.name,
+        "view": "paper" if video_id in PAPER_MAINLINE_ALIASES else (case_dir.parent.name if case_dir.parent != OUTPUT_DIR else ""),
         "path": str(case_dir),
         "files": files,
+        "pipeline_status": pipeline_status,
+        **pipeline_status,
         "ready_for_frontend": any(
             (f["name"] == "timeline_chart.json" and f["exists"])
             or (f["name"] == "verified_events.jsonl" and f["exists"])
+            or (f["name"] == "actions.fusion_v2.jsonl" and f["exists"])
             for f in files
         ),
     }
@@ -1552,8 +1889,133 @@ def get_projection(video_id: str, method: str = "pca", metric: str = "euclidean"
 
 
 # =========================================================
-# 7) 鍚姩
+# 8) Frontend Bundle API
 # =========================================================
+
+BUNDLE_DIR = (OUTPUT_DIR / "frontend_bundle").resolve()
+
+
+def _find_bundle(case_id: str):
+    case_id = str(case_id or "").strip()
+    if not case_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", case_id):
+        return None
+    direct = BUNDLE_DIR / case_id
+    if direct.exists() and (direct / "frontend_data_manifest.json").exists():
+        return direct
+    if BUNDLE_DIR.exists():
+        for child in BUNDLE_DIR.iterdir():
+            if not child.is_dir():
+                continue
+            if child.name == case_id and (child / "frontend_data_manifest.json").exists():
+                return child
+    return None
+
+
+def _get_bundle_json(case_id: str, filename: str) -> Any:
+    bundle = _find_bundle(case_id)
+    if bundle is None:
+        raise HTTPException(404, f"bundle not found: {case_id}")
+    path = bundle / filename
+    if not path.exists():
+        raise HTTPException(404, f"{filename} not found")
+    return _read_json_file(path, {})
+
+
+@app.get("/api/bundle/list")
+def list_bundles():
+    items: List[Dict[str, Any]] = []
+    if not BUNDLE_DIR.exists():
+        return items
+    for child in sorted(BUNDLE_DIR.iterdir(), key=lambda p: p.name):
+        if not child.is_dir():
+            continue
+        manifest_path = child / "frontend_data_manifest.json"
+        if not manifest_path.exists():
+            continue
+        manifest = _read_json_file(manifest_path, {})
+        items.append({
+            "case_id": manifest.get("case_id", child.name),
+            "students": manifest.get("tracked_students", 0),
+            "contract_status": manifest.get("contract_status", "unknown"),
+            "files": list(manifest.get("files", {}).keys()),
+            "assets": list(manifest.get("assets", {}).keys()),
+        })
+    return items
+
+
+@app.get("/api/bundle/{case_id}/manifest")
+def get_bundle_manifest(case_id: str):
+    return _get_bundle_json(case_id, "frontend_data_manifest.json")
+
+
+@app.get("/api/bundle/{case_id}/timeline")
+def get_bundle_timeline(case_id: str):
+    return _get_bundle_json(case_id, "timeline_students.json")
+
+
+@app.get("/api/bundle/{case_id}/tracks_sampled")
+def get_bundle_tracks_sampled(case_id: str):
+    return _get_bundle_json(case_id, "tracks_sampled.json")
+
+
+@app.get("/api/bundle/{case_id}/metrics")
+def get_bundle_metrics(case_id: str):
+    return _get_bundle_json(case_id, "metrics_summary.json")
+
+
+@app.get("/api/bundle/{case_id}/ablation")
+def get_bundle_ablation(case_id: str):
+    return _get_bundle_json(case_id, "ablation_summary.json")
+
+
+@app.get("/api/bundle/{case_id}/behavior_segments")
+def get_bundle_behavior_segments(case_id: str):
+    return _get_bundle_json(case_id, "behavior_segments.json")
+
+
+@app.get("/api/bundle/{case_id}/fusion_segments")
+def get_bundle_fusion_segments(case_id: str):
+    return _get_bundle_json(case_id, "fusion_segments.json")
+
+
+@app.get("/api/bundle/{case_id}/student_id_map")
+def get_bundle_student_id_map(case_id: str):
+    return _get_bundle_json(case_id, "student_id_map.json")
+
+
+@app.get("/api/bundle/{case_id}/failure_cases")
+def get_bundle_failure_cases(case_id: str):
+    return _get_bundle_json(case_id, "failure_cases.json")
+
+
+@app.get("/api/bundle/{case_id}/verified")
+def get_bundle_verified(case_id: str):
+    return _get_bundle_json(case_id, "verified_events.json")
+
+
+@app.get("/paper/bundle/{case_id}")
+@app.get("/paper/bundle/{case_id}/")
+async def paper_demo_case_page(case_id: str, request: Request):
+    bundle = _find_bundle(case_id)
+    if bundle is None:
+        raise HTTPException(404, f"bundle not found: {case_id}")
+    manifest = _read_json_file(bundle / "frontend_data_manifest.json", {})
+    return templates.TemplateResponse("paper_demo.html", {
+        "request": request,
+        "case_id": case_id,
+        "bundle_path": str(bundle),
+        "manifest": manifest,
+    })
+
+
+# =========================================================
+# 9) Mount frontend bundles as static and start
+# =========================================================
+
+if BUNDLE_DIR.exists():
+    app.mount("/output/frontend_bundle", StaticFiles(directory=str(BUNDLE_DIR)), name="frontend_bundle")
+
+
 if __name__ == "__main__":
     import uvicorn
 

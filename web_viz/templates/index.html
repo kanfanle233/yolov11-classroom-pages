@@ -3,9 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Edu-Insight System (Tabbed Stats)</title>
-    <!-- D3.js v7 -->
-    <script src="https://cdn.bootcdn.net/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <title>Edu-Insight System</title>
+    <!-- Prefer local D3, keep CDN fallback for standalone copies. -->
+    <script src="/docs/vendor/d3/d3.v7.min.js"></script>
+    <script src="/docs/vendor/d3/d3-scale-chromatic.v3.min.js"></script>
+    <script>
+        if (!window.d3) {
+            document.write('<script src="https://cdn.bootcdn.net/ajax/libs/d3/7.8.5/d3.min.js"><\\/script>');
+        }
+    </script>
     <!-- FontAwesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
@@ -70,10 +76,108 @@
         .list-item {
             padding: 12px 16px; cursor: pointer; border-bottom: 1px solid #f0f0f0;
             font-size: 13px; color: var(--text-main); transition: all 0.2s;
-            display: flex; align-items: center; gap: 8px;
+            display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 8px;
         }
         .list-item:hover { background: #f8f9fa; color: var(--accent); }
         .list-item.active { background: #eaf4fc; color: var(--accent); border-right: 3px solid var(--accent); font-weight: 600; }
+        .case-main { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+        .case-label {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            line-height: 1.25;
+        }
+        .case-meta {
+            display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+            color: #8292a2; font-size: 10px; font-weight: 700; letter-spacing: 0.2px;
+        }
+        .case-badge {
+            display: inline-flex; align-items: center; height: 18px;
+            border: 1px solid #dce5ee; border-radius: 5px; padding: 0 5px;
+            background: #fff; color: #6b7f92;
+        }
+        .case-badge.mainline { border-color: #bfe6d2; background: #effaf4; color: #1d7a46; }
+        .case-badge.fusion { border-color: #c8def8; background: #eef6ff; color: #126fbe; }
+        .case-badge.legacy { border-color: #ead5d5; background: #fff6f6; color: #a65757; }
+        .artifact-status-panel {
+            border-bottom: 1px solid var(--border);
+            background: #fbfcfe;
+            padding: 10px 12px;
+            font-size: 11px;
+            color: #596b7d;
+        }
+        .artifact-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-weight: 700;
+            color: #243b53;
+            margin-bottom: 8px;
+        }
+        .artifact-flow {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 5px;
+        }
+        .artifact-chip {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            border: 1px solid #e2e8f0;
+            background: #fff;
+            border-radius: 6px;
+            padding: 5px 7px;
+            min-width: 0;
+        }
+        .artifact-chip span:first-child {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .artifact-chip.ok { border-color: #cae8d2; color: #1e824c; }
+        .artifact-chip.missing { color: #9aa7b6; }
+        .artifact-mini {
+            margin-top: 8px;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 5px;
+            color: #6b7f92;
+        }
+        .artifact-mini div {
+            background: #fff;
+            border: 1px solid #edf2f7;
+            border-radius: 6px;
+            padding: 5px 6px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .artifact-mainline {
+            margin: 8px 0 9px;
+            border: 1px solid #e1e8ef;
+            background: #fff;
+            border-radius: 7px;
+            padding: 7px;
+            display: grid;
+            gap: 4px;
+        }
+        .artifact-mainline.ok { border-color: #bfe6d2; background: #f6fffa; }
+        .artifact-mainline.warn { border-color: #c8def8; background: #f4f9ff; }
+        .artifact-mainline.legacy { border-color: #ead5d5; background: #fff8f8; }
+        .artifact-mainline strong {
+            color: #20384f;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .artifact-mainline span {
+            color: #718295;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
 
         /* Main Area */
         .area-main { grid-area: main; background: #ffffff; display: flex; flex-direction: column; position: relative; overflow: hidden; }
@@ -336,6 +440,10 @@
 
     <aside class="area-sidebar">
         <div class="list-header">Classroom Cases</div>
+        <div id="artifact-status-panel" class="artifact-status-panel">
+            <div class="artifact-title"><span>Pipeline Artifacts</span><span>idle</span></div>
+            <div style="color:#8a99a8;">Select a case to inspect output readiness.</div>
+        </div>
         <div id="video-list-container">
             <div class="empty-tip" style="padding:20px; text-align:center; color:#999;">Loading...</div>
         </div>
@@ -452,6 +560,9 @@
                 <button class="v-btn active" data-mode="original">Original</button>
                 <button class="v-btn" data-mode="overlay">AI Overlay</button>
                 <button class="v-btn" data-mode="pose">Skeleton</button>
+                <button id="btn-local-mp4" class="v-btn"><i class="fa-solid fa-upload"></i> Local MP4</button>
+                <button id="btn-clear-local" class="v-btn disabled">Clear Local</button>
+                <input id="local-mp4-input" type="file" accept="video/mp4,video/*" style="display:none" />
                 <div style="flex:1"></div>
                 <span id="time-display" style="font-size:11px; color:#9aa7b6;">00:00</span>
                 <button id="btn-bbox" class="v-btn"><i class="fa-solid fa-vector-square"></i> BBox</button>
@@ -519,6 +630,38 @@
         return r.json();
     }
 
+    async function fetchJsonLoose(url) {
+        if (!url) return null;
+        try {
+            const r = await fetch(url, { cache: 'no-cache' });
+            if (!r.ok) return null;
+            return await r.json();
+        } catch (e) {
+            console.warn("JSON artifact unavailable", url, e);
+            return null;
+        }
+    }
+
+    async function fetchJsonl(url) {
+        if (!url) return [];
+        try {
+            const r = await fetch(url, { cache: 'no-cache' });
+            if (!r.ok) return [];
+            const text = await r.text();
+            return text.split('\n')
+                .map(x => x.trim())
+                .filter(Boolean)
+                .map(line => {
+                    try { return JSON.parse(line); }
+                    catch (e) { return null; }
+                })
+                .filter(Boolean);
+        } catch (e) {
+            console.warn("JSONL artifact unavailable", url, e);
+            return [];
+        }
+    }
+
     function getManifestCandidates() {
         const path = window.location.pathname || '/';
         const baseDir = path.endsWith('/') ? path : path.slice(0, path.lastIndexOf('/') + 1);
@@ -554,14 +697,14 @@
 
     const DataSource = {
         mode: 'api',
-        manifest: null,
+        staticManifest: null,
 
         async init() {
             if (window.location.protocol !== 'file:') {
                 try {
                     await fetchJsonStrict(`${CONFIG.API_BASE}/list_cases`);
                     this.mode = 'api';
-                    this.manifest = null;
+                    this.staticManifest = null;
                     console.log('[DataSource] api mode');
                     return;
                 } catch (e) {
@@ -584,7 +727,7 @@
                     const m = await fetchJsonStrict(manifestUrl);
                     if (m && Array.isArray(m.cases)) {
                         this.mode = 'static';
-                        this.manifest = normalizeManifestPaths(m);
+                        this.staticManifest = normalizeManifestPaths(m);
                         console.log('[DataSource] static mode via', manifestUrl);
                         return;
                     }
@@ -598,15 +741,82 @@
         },
 
         _caseById(caseId) {
-            if (!this.manifest || !Array.isArray(this.manifest.cases)) return null;
-            return this.manifest.cases.find(c => c && c.video_id === caseId) || null;
+            if (!this.staticManifest || !Array.isArray(this.staticManifest.cases)) return null;
+            return this.staticManifest.cases.find(c => c && c.video_id === caseId) || null;
         },
 
         async listCases() {
-            if (this.mode === 'static' && this.manifest) {
-                return this.manifest.cases;
+            if (this.mode === 'static' && this.staticManifest) {
+                return this.staticManifest.cases;
             }
             return fetchJsonStrict(`${CONFIG.API_BASE}/list_cases`);
+        },
+
+        async manifest(caseId) {
+            if (this.mode === 'static') {
+                const c = this._caseById(caseId);
+                const paths = c?.paths || {};
+                const files = Object.entries(paths).map(([name, url]) => ({
+                    name,
+                    url,
+                    exists: Boolean(url),
+                    size: 0,
+                }));
+                return { video_id: caseId, files, ready_for_frontend: files.length > 0 };
+            }
+            const m = await fetchJsonLoose(`${CONFIG.API_BASE}/case/${encodeURIComponent(caseId)}/manifest`);
+            return m || { video_id: caseId, files: [], ready_for_frontend: false };
+        },
+
+        async loadArtifacts(caseId) {
+            const manifest = await this.manifest(caseId);
+            const files = Array.isArray(manifest?.files) ? manifest.files : [];
+            const byName = new Map(files.map(f => [f.name, f]));
+            const urlFor = (...names) => {
+                for (const name of names) {
+                    const f = byName.get(name);
+                    if (f?.exists && f?.url) return f.url;
+                }
+                return null;
+            };
+            const [
+                actionsFusion,
+                actionsRaw,
+                eventQueries,
+                verifiedEvents,
+                align,
+                asrQuality,
+                fusionContract,
+                pipelineContract,
+                verifierEval,
+                verifierCalibration,
+            ] = await Promise.all([
+                fetchJsonl(urlFor("actions.fusion_v2.jsonl", "actions_fused.jsonl", "actions.jsonl")),
+                fetchJsonl(urlFor("actions.raw.jsonl", "actions.jsonl")),
+                fetchJsonl(urlFor("event_queries.fusion_v2.jsonl", "event_queries.visual_fallback.jsonl", "event_queries.jsonl")),
+                fetchJsonl(urlFor("verified_events.jsonl")),
+                fetchJsonLoose(urlFor("align_multimodal.json")),
+                fetchJsonLoose(urlFor("asr_quality_report.json")),
+                fetchJsonLoose(urlFor("fusion_contract_report.json")),
+                fetchJsonLoose(urlFor("pipeline_contract_v2_report.json")),
+                fetchJsonLoose(urlFor("verifier_eval_report.json")),
+                fetchJsonLoose(urlFor("verifier_calibration_report.json")),
+            ]);
+            return {
+                manifest,
+                actionsFusion,
+                actionsRaw,
+                eventQueries,
+                verifiedEvents,
+                align,
+                reports: {
+                    asrQuality,
+                    fusionContract,
+                    pipelineContract,
+                    verifierEval,
+                    verifierCalibration,
+                },
+            };
         },
 
         async media(caseId) {
@@ -701,6 +911,8 @@
             groupData: [],
             transcriptData: [],
             tracksData: {},
+            manifestData: null,
+            artifacts: {},
             projectionData: null,
             isLoading: false,
             videoDuration: 0,
@@ -739,8 +951,20 @@
                         case_id: item?.case_id || ((item?.video_id || "").split("__").pop() || ""),
                         path: item?.path || "",
                         has_original_video: item?.has_original_video,
+                        ready_for_frontend: item?.ready_for_frontend,
+                        paper_package: item?.paper_package,
+                        label: item?.label || "",
+                        behavior_model: item?.behavior_model || "",
+                        object_model: item?.object_model || "",
+                        uses_finetuned_behavior_model: Boolean(item?.uses_finetuned_behavior_model),
+                        uses_old_object_only_model: Boolean(item?.uses_old_object_only_model),
+                        fusion_v2_ready: Boolean(item?.fusion_v2_ready),
+                        mainline_ready: Boolean(item?.mainline_ready),
+                        timeline_ready: Boolean(item?.timeline_ready),
+                        legacy_reason: item?.legacy_reason || "",
+                        counts: item?.counts || {},
                     };
-                }).filter(x => x.video_id && x.has_original_video !== false);
+                }).filter(x => x.video_id && (x.ready_for_frontend !== false || x.has_original_video !== false || x.paper_package));
                 this.state.caseList = normalized;
                 this.state.caseMap = Object.fromEntries(normalized.map(x => [x.video_id, x]));
             } catch(e) {
@@ -756,6 +980,8 @@
             this.state.currentCaseId = caseId;
             this.state.isLoading = true;
             this.state.selectedTrackId = null; // Reset selection
+            this.state.manifestData = null;
+            this.state.artifacts = {};
             this.notify("loadingStart");
 
             this.state.videoUrls = await resolveVideoUrls(caseId, this.state.caseMap[caseId]);
@@ -769,12 +995,15 @@
             this.state.timelineZoomRange = null;
 
             try {
-                const [tl, tr, trk, st] = await Promise.all([
+                const [tl, tr, trk, st, artifacts] = await Promise.all([
                     DataSource.timeline(caseId).catch(()=>({})),
                     DataSource.transcript(caseId).catch(()=>([])),
                     DataSource.tracks(caseId).catch(()=>({})),
-                    DataSource.stats(caseId).catch(()=>({}))
+                    DataSource.stats(caseId).catch(()=>({})),
+                    DataSource.loadArtifacts(caseId).catch(() => ({ manifest: null }))
                 ]);
+                this.state.manifestData = artifacts?.manifest || null;
+                this.state.artifacts = artifacts || {};
 
                 // Normalize Timeline
                 const persons = [], groups = [];
@@ -801,7 +1030,7 @@
 
                     let aid = Number.parseInt(d.action_id, 10);
                     if (!Number.isFinite(aid)) {
-                        const aName = String(d.action ?? d.action_label ?? "").trim().toLowerCase();
+                        const aName = normalizeActionName(d.semantic_id ?? d.fused_action ?? d.action ?? d.action_label ?? "");
                         aid = Object.prototype.hasOwnProperty.call(ACTION_NAME_TO_ID, aName)
                             ? ACTION_NAME_TO_ID[aName]
                             : -1;
@@ -950,6 +1179,53 @@
     function formatTime(s) {
         const m = Math.floor(s/60), sec = Math.floor(s%60);
         return `${m}:${sec.toString().padStart(2,'0')}`;
+    }
+
+    function normalizeActionName(value) {
+        let name = String(value ?? "").trim().toLowerCase();
+        if (name.includes("/")) name = name.split("/")[0].trim();
+        return name.replace(/[\s-]+/g, "_");
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    function baseNameFromPath(value) {
+        const text = String(value || "").trim();
+        if (!text) return "";
+        const parts = text.split(/[\\/]+/).filter(Boolean);
+        return parts.length ? parts[parts.length - 1] : text;
+    }
+
+    function actionIdFromAny(value, fallback = -1) {
+        const name = normalizeActionName(value);
+        if (Object.prototype.hasOwnProperty.call(ACTION_NAME_TO_ID, name)) {
+            return ACTION_NAME_TO_ID[name];
+        }
+        const n = Number.parseInt(fallback, 10);
+        return Number.isFinite(n) ? n : -1;
+    }
+
+    function getTimelineDomain(state, data) {
+        const maxEnd = Math.max(
+            1,
+            Number(state.videoDuration || 0),
+            d3.max(data || [], d => Number(d.end) || 0) || 0,
+            d3.max(state.artifacts?.verifiedEvents || [], d => Number(d.query_time ?? d.window_end ?? 0) || 0) || 0,
+            d3.max(state.artifacts?.eventQueries || [], d => Number(d.timestamp ?? d.t_center ?? d.end ?? 0) || 0) || 0
+        );
+        if (Array.isArray(state.timelineZoomRange) && state.timelineZoomRange.length === 2) {
+            const a = Math.max(0, Math.min(Number(state.timelineZoomRange[0]) || 0, maxEnd));
+            const b = Math.max(0, Math.min(Number(state.timelineZoomRange[1]) || maxEnd, maxEnd));
+            if (b > a + 0.05) return { domain: [a, b], maxEnd };
+        }
+        return { domain: [0, maxEnd], maxEnd };
     }
 
     function captureVideoSnapshot(videoEl) {
@@ -1221,6 +1497,69 @@
     }
 
     // ====== RENDER LEGENDS ======
+    function renderArtifactPanel(state) {
+        const panel = document.getElementById("artifact-status-panel");
+        if (!panel) return;
+        const manifest = state.manifestData || {};
+        const files = Array.isArray(manifest.files) ? manifest.files : [];
+        const byName = new Map(files.map(f => [f.name, f]));
+        const has = (name) => Boolean(byName.get(name)?.exists);
+        const flow = [
+            ["pose/tracks", has("pose_tracks_smooth.jsonl") || has("pose_tracks_smooth_uq.jsonl")],
+            ["actions", has("actions.fusion_v2.jsonl") || has("actions_fused.jsonl") || has("actions.jsonl")],
+            ["transcript", has("transcript.jsonl") || has("asr_quality_report.json")],
+            ["event_queries", has("event_queries.fusion_v2.jsonl") || has("event_queries.jsonl")],
+            ["align", has("align_multimodal.json")],
+            ["verified", has("verified_events.jsonl")],
+            ["timeline", has("timeline_chart.json") || has("timeline_viz.json")],
+        ];
+        const artifacts = state.artifacts || {};
+        const reports = artifacts.reports || {};
+        const counts = reports.pipelineContract?.counts || reports.fusionContract?.counts || {};
+        const asr = reports.asrQuality || {};
+        const evalMetrics = reports.verifierEval?.metrics || {};
+        const fileOk = files.filter(f => f.exists).length;
+        const listStatus = state.caseMap?.[state.currentCaseId] || {};
+        const status = { ...listStatus, ...(manifest.pipeline_status || {}) };
+        const statusClass = status.mainline_ready ? "ok" : (status.fusion_v2_ready ? "warn" : "legacy");
+        const statusLabel = status.mainline_ready ? "MAINLINE READY" : (status.fusion_v2_ready ? "FUSION V2 PARTIAL" : "LEGACY OUTPUT");
+        const behaviorModel = baseNameFromPath(status.behavior_model);
+        const objectModel = baseNameFromPath(status.object_model);
+        const modelLine = behaviorModel
+            ? `behavior ${escapeHtml(behaviorModel)}`
+            : (objectModel ? `object ${escapeHtml(objectModel)}` : "model unknown");
+        panel.innerHTML = `
+            <div class="artifact-title">
+                <span>Pipeline Artifacts</span>
+                <span>${fileOk}/${files.length || 0}</span>
+            </div>
+            <div class="artifact-mainline ${statusClass}">
+                <strong>
+                    <span>${statusLabel}</span>
+                    <i class="fa-solid ${status.mainline_ready ? "fa-circle-check" : (status.fusion_v2_ready ? "fa-code-merge" : "fa-triangle-exclamation")}"></i>
+                </strong>
+                <span title="${escapeHtml(status.behavior_model || status.object_model || "")}">${modelLine}</span>
+                ${status.legacy_reason ? `<span title="${escapeHtml(status.legacy_reason)}">missing ${escapeHtml(status.legacy_reason)}</span>` : ""}
+            </div>
+            <div class="artifact-flow">
+                ${flow.map(([name, ok]) => `
+                    <div class="artifact-chip ${ok ? "ok" : "missing"}">
+                        <span>${name}</span>
+                        <i class="fa-solid ${ok ? "fa-check" : "fa-minus"}"></i>
+                    </div>
+                `).join("")}
+            </div>
+            <div class="artifact-mini">
+                <div>actions ${counts.actions_fusion_v2 ?? artifacts.actionsFusion?.length ?? 0}</div>
+                <div>events ${counts.event_queries_fusion_v2 ?? artifacts.eventQueries?.length ?? 0}</div>
+                <div>verified ${counts.verified_events ?? artifacts.verifiedEvents?.length ?? 0}</div>
+                <div>ASR ${asr.segments_accepted ?? 0}/${asr.segments_raw ?? 0}</div>
+                <div>students ${counts.student_count ?? counts.tracked_students ?? "-"}</div>
+                <div>F1 ${Number(evalMetrics.f1 ?? 0).toFixed(2)}</div>
+            </div>
+        `;
+    }
+
     function renderLegends() {
         // 1. Projection Legend (REMOVED)
 
@@ -1366,6 +1705,19 @@
 
         // Video setup
         const v = document.getElementById("myVideo");
+        const syncVideoClock = (mediaTime = null) => {
+            const t = Number.isFinite(Number(mediaTime)) ? Number(mediaTime) : Number(v.currentTime || 0);
+            Store.state.currentTime = t;
+            Store.notify("timeUpdated");
+            document.getElementById("time-display").innerText = formatTime(t);
+        };
+        if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
+            const onFrame = (now, metadata) => {
+                syncVideoClock(metadata?.mediaTime);
+                v.requestVideoFrameCallback(onFrame);
+            };
+            v.requestVideoFrameCallback(onFrame);
+        }
         v.addEventListener("loadedmetadata", () => Store.state.videoDuration = v.duration);
         v.addEventListener("loadeddata", () => {
             const snap = captureVideoSnapshot(v);
@@ -1378,9 +1730,44 @@
             }
         });
         v.addEventListener("timeupdate", () => {
-            Store.state.currentTime = v.currentTime;
-            Store.notify("timeUpdated");
-            document.getElementById("time-display").innerText = formatTime(v.currentTime);
+            syncVideoClock();
+        });
+
+        let localMp4ObjectUrl = null;
+        let localPreviousOriginalUrl = null;
+        document.getElementById("btn-local-mp4").addEventListener("click", () => {
+            document.getElementById("local-mp4-input").click();
+        });
+        document.getElementById("local-mp4-input").addEventListener("change", (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            if (localMp4ObjectUrl) URL.revokeObjectURL(localMp4ObjectUrl);
+            localPreviousOriginalUrl = Store.state.videoUrls.original || null;
+            localMp4ObjectUrl = URL.createObjectURL(file);
+            Store.state.videoUrls.original = localMp4ObjectUrl;
+            v.src = localMp4ObjectUrl;
+            v.load();
+            document.querySelectorAll(".v-btn[data-mode]").forEach(b => b.classList.remove("active"));
+            const originalBtn = document.querySelector('.v-btn[data-mode="original"]');
+            if (originalBtn) originalBtn.classList.add("active");
+            const clearBtn = document.getElementById("btn-clear-local");
+            clearBtn.classList.remove("disabled");
+        });
+        document.getElementById("btn-clear-local").addEventListener("click", () => {
+            if (!localMp4ObjectUrl) return;
+            URL.revokeObjectURL(localMp4ObjectUrl);
+            localMp4ObjectUrl = null;
+            document.getElementById("local-mp4-input").value = "";
+            const clearBtn = document.getElementById("btn-clear-local");
+            clearBtn.classList.add("disabled");
+            Store.state.videoUrls.original = localPreviousOriginalUrl || "";
+            localPreviousOriginalUrl = null;
+            if (Store.state.videoUrls.original) {
+                v.src = Store.state.videoUrls.original;
+            } else {
+                v.removeAttribute("src");
+            }
+            v.load();
         });
 
         // View Mode
@@ -1425,11 +1812,30 @@
         if(state.caseList.length===0) c.innerHTML = `<div class="empty-tip">No videos found</div>`;
         state.caseList.forEach(item => {
             const id = item.video_id;
-            const label = item.view ? `${item.view} / ${id}` : id;
-            c.innerHTML += `<div class="list-item" data-id="${id}"><i class="fa-regular fa-file-video"></i> ${label}</div>`;
+            const label = item.label || (item.view ? `${item.view} / ${id}` : id);
+            const icon = item.paper_package ? "fa-regular fa-file-lines" : "fa-regular fa-file-video";
+            const statusBadge = item.mainline_ready
+                ? `<span class="case-badge mainline">MAINLINE</span>`
+                : (item.fusion_v2_ready
+                    ? `<span class="case-badge fusion">FUSION V2</span>`
+                    : `<span class="case-badge legacy">LEGACY</span>`);
+            const modelBadge = item.uses_finetuned_behavior_model
+                ? `<span class="case-badge mainline">YOLO11s</span>`
+                : (item.uses_old_object_only_model ? `<span class="case-badge legacy">YOLO11x obj</span>` : "");
+            c.innerHTML += `
+                <div class="list-item ${item.mainline_ready ? "mainline" : (item.fusion_v2_ready ? "fusion" : "legacy")}" data-id="${escapeHtml(id)}" title="${escapeHtml(item.path || "")}">
+                    <i class="${icon}"></i>
+                    <div class="case-main">
+                        <div class="case-label">${escapeHtml(label)}</div>
+                        <div class="case-meta">${statusBadge}${modelBadge}</div>
+                    </div>
+                </div>`;
         });
         if(state.caseList.length) {
-            const preferred = state.caseList.find(x => String(x.video_id || "").includes("__")) || state.caseList[0];
+            const preferred = state.caseList.find(x => x.paper_package)
+                || state.caseList.find(x => x.mainline_ready)
+                || state.caseList.find(x => String(x.video_id || "").includes("__"))
+                || state.caseList[0];
             Store.selectCase(preferred.video_id);
         }
     });
@@ -1439,6 +1845,7 @@
         document.getElementById("projection-chart").innerHTML = '';
         document.getElementById("stat-list-content").innerHTML = '';
         document.getElementById("transcript-box").innerHTML = '';
+        renderArtifactPanel(Store.state);
         updateSpatialControls(Store.state);
     });
 
@@ -1474,6 +1881,7 @@
         renderTranscript(state);
         renderGroup(state);
         renderPC(state); // Build parallel coords
+        renderArtifactPanel(state);
 
         // Initial story
         document.getElementById("stat-list-content").innerHTML = `
@@ -1603,6 +2011,10 @@
 
         // Find interaction
         const interactDur = (counts[4]||0) + (counts[6]||0) + (counts[7]||0); // Chat, Raise, Stand
+        const verified = (state.artifacts?.verifiedEvents || [])
+            .filter(v => Number(v.track_id) === Number(tid))
+            .sort((a, b) => Number(a.query_time ?? a.window_start ?? 0) - Number(b.query_time ?? b.window_start ?? 0))
+            .slice(0, 6);
 
         // Construct Story HTML
         let mood = "Neutral";
@@ -1643,6 +2055,16 @@
                         return `<div style="position:absolute; left:${left}%; width:${width}%; top:0; bottom:0; background:${col}"></div>`;
                     }).join('')}
                 </div>
+            </div>
+
+            <div class="story-card">
+                <div class="story-title" style="font-size:13px;">Verified Events</div>
+                ${verified.length ? verified.map(v => {
+                    const label = escapeHtml(v.match_label || v.label || "event");
+                    const rel = Number(v.reliability_score ?? v.reliability ?? 0);
+                    const time = Number(v.query_time ?? v.window_start ?? 0) || 0;
+                    return `<div class="tag" style="margin:3px 4px 3px 0;display:inline-block;cursor:pointer;" onclick="document.getElementById('myVideo').currentTime=${time}">${formatTime(time)} ${label} ${(rel*100).toFixed(0)}%</div>`;
+                }).join("") : `<div style="color:#97a6b4;font-size:12px;">No verified event bound to this student.</div>`}
             </div>
         `;
         container.innerHTML = html;
@@ -1697,6 +2119,31 @@
             .on("click", (e, d) => {
                 Store.setSelection(d.track_id);
                 document.getElementById("myVideo").currentTime = Number(d.start) || 0;
+            });
+
+        const verified = (state.artifacts?.verifiedEvents || [])
+            .map((d) => {
+                const tid = Number(d.track_id);
+                const qt = Number(d.query_time ?? d.timestamp ?? d.window_start ?? 0);
+                const label = String(d.match_label ?? d.label ?? "uncertain");
+                return { ...d, track_id: tid, query_time: qt, verification_label: label };
+            })
+            .filter(d => Number.isFinite(d.track_id) && rowIndex.has(d.track_id) && Number.isFinite(d.query_time) && d.query_time >= domain[0] && d.query_time <= domain[1]);
+        const verifyColor = (label) => label === "match" ? "#16a34a" : (label === "mismatch" ? "#dc2626" : "#f59e0b");
+        svg.selectAll("circle.verified-marker")
+            .data(verified)
+            .enter().append("circle")
+            .attr("class", "verified-marker")
+            .attr("cx", d => x(d.query_time))
+            .attr("cy", d => margin.top + (rowIndex.get(d.track_id) ?? 0) * rowH + rowH * 0.5)
+            .attr("r", 4)
+            .attr("fill", d => verifyColor(d.verification_label))
+            .attr("stroke", "#fff")
+            .attr("stroke-width", 1.4)
+            .style("cursor", "pointer")
+            .on("click", (e, d) => {
+                Store.setSelection(d.track_id);
+                document.getElementById("myVideo").currentTime = Number(d.query_time) || 0;
             });
 
         svg.selectAll("text.gantt-row-label")
@@ -1969,13 +2416,42 @@
     function renderTranscript(state) {
         const c = document.getElementById("transcript-box");
         c.innerHTML = "";
-        state.transcriptData.forEach((t, i) => {
+        const transcript = Array.isArray(state.transcriptData) ? state.transcriptData : [];
+        const semanticEvents = state.artifacts?.eventQueries || [];
+        const verifiedEvents = state.artifacts?.verifiedEvents || [];
+
+        if (!transcript.length && semanticEvents.length) {
+            c.innerHTML = semanticEvents.map((t) => {
+                const start = Number(t.start ?? t.timestamp ?? t.t_center ?? 0) || 0;
+                const end = Number(t.end ?? t.timestamp ?? t.t_center ?? start) || start;
+                const verified = verifiedEvents.find(v => String(v.query_id || v.event_id) === String(t.query_id || t.event_id));
+                const label = verified?.match_label || verified?.label || "query";
+                const reliability = Number(verified?.reliability_score ?? verified?.reliability ?? t.confidence ?? 0);
+                return `
+                    <div class="transcript-line" data-start="${start}" onclick="document.getElementById('myVideo').currentTime=${start}">
+                        <div class="ts-meta">${formatTime(start)}</div>
+                        <div class="ts-content">
+                            <div class="ts-name">${escapeHtml(t.source || "visual_fallback")} · ${escapeHtml(label)} · ${(reliability * 100).toFixed(0)}%</div>
+                            <div class="ts-text">${escapeHtml(t.query_text || t.event_type || t.semantic_label_en || "event")} <span style="color:#8a99a8;">${formatTime(start)}-${formatTime(end)}</span></div>
+                        </div>
+                    </div>
+                `;
+            }).join("");
+            return;
+        }
+
+        if (!transcript.length) {
+            c.innerHTML = `<div style="padding:28px;color:#97a6b4;">No transcript or event query stream for this case.</div>`;
+            return;
+        }
+
+        transcript.forEach((t, i) => {
             c.innerHTML += `
                 <div class="transcript-line" data-start="${t.start}" onclick="document.getElementById('myVideo').currentTime=${t.start}">
                     <div class="ts-meta">${formatTime(t.start)}</div>
                     <div class="ts-content">
-                        <div class="ts-name">Speaker</div>
-                        <div class="ts-text">${t.text}</div>
+                        <div class="ts-name">Speaker${t.verification_label ? ` · ${escapeHtml(t.verification_label)}` : ""}</div>
+                        <div class="ts-text">${escapeHtml(t.text)}</div>
                     </div>
                 </div>
             `;

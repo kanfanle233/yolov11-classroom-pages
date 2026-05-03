@@ -1,0 +1,2 @@
+F:\miniconda\envs\pytorch_env\lib\site-packages\requests\__init__.py:86: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).
+  warnings.warn(

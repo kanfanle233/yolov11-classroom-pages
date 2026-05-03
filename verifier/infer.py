@@ -110,6 +110,8 @@ def _predict_one(
     query_text: str,
     cand: Dict[str, Any],
     uq_default: float,
+    query_source: str = "unknown",
+    audio_confidence: float = 0.0,
 ) -> Dict[str, Any]:
     overlap = _safe_float(cand.get("overlap", 0.0), 0.0)
     action_conf = _safe_float(cand.get("action_confidence", cand.get("confidence", 0.0)), 0.0)
@@ -134,14 +136,41 @@ def _predict_one(
     text_score = feat[2]
     visual_score = _clamp01(0.65 * feat[0] + 0.35 * feat[1])
 
+    # === Confidence-Weighted Dynamic Late Fusion ===
+    # Reference: Kiziltepe et al. (IEEE Access 2024); CMU-MMAC Survey (arXiv 2025)
+    # Key insight: modality weights adapt to real-time confidence, not fixed 0.55/0.45
+    is_visual_fallback = "fallback" in str(query_source).lower()
+    has_real_audio = (
+        audio_confidence > 0.0
+        and not is_visual_fallback
+        and str(query_source).strip().lower() not in ("unknown", "placeholder", "fallback", "")
+    )
+
+    if has_real_audio:
+        # Dynamic modality weights: tracking stability vs audio quality
+        w_visual = _clamp01(1.0 - uq)           # lower uncertainty = higher visual weight
+        w_audio  = _clamp01(audio_confidence)    # ASR quality as audio weight
+        p_match = _clamp01(
+            (w_visual * visual_score + w_audio * text_score) / (w_visual + w_audio + 1e-9)
+        )
+        fusion_mode = "audio_visual_dynamic"
+    elif is_visual_fallback:
+        # Visual fallback: no real audio, don't fake text_score contribution
+        p_match = visual_score
+        text_score = float('nan')  # mark as not applicable
+        fusion_mode = "visual_only_fallback"
+    else:
+        # No audio available at all
+        p_match = visual_score
+        fusion_mode = "visual_only"
+
+    # Override: if MLP model is provided, use it (trained on gold labels)
     if model is not None:
         x = torch.tensor([feat], dtype=torch.float32)
         with torch.no_grad():
             logits = model(x).squeeze(0)
         p_match = float(torch.sigmoid(logits / max(1e-6, runtime_cfg.temperature)).item())
-    else:
-        # Fallback heuristic when no trained model is provided.
-        p_match = _clamp01(0.55 * visual_score + 0.45 * text_score)
+        fusion_mode = "mlp_trained"
 
     p_mismatch = _clamp01(1.0 - p_match)
     reliability = _clamp01(p_match * (1.0 - runtime_cfg.uq_gate * _clamp01(uq)))
@@ -162,6 +191,9 @@ def _predict_one(
         "visual_score": visual_score,
         "text_score": text_score,
         "uq_score": _clamp01(uq),
+        "fusion_mode": fusion_mode,
+        "w_visual": _clamp01(1.0 - uq) if has_real_audio else 1.0,
+        "w_audio": _clamp01(audio_confidence) if has_real_audio else 0.0,
         "action": action_label,
         "raw_action": raw_action,
         "behavior_code": behavior_code,
@@ -199,6 +231,8 @@ def infer_verified_rows(
         query = q_index.get(query_id, {})
         event_type = str(query.get("event_type", block.get("event_type", "unknown")))
         query_text = str(query.get("query_text", block.get("query_text", "")))
+        query_source = str(query.get("source", block.get("source", "unknown")))
+        audio_conf = _safe_float(query.get("confidence", 0.0), 0.0)
         window = block.get("window", {})
         if not isinstance(window, dict):
             window = {
@@ -226,6 +260,8 @@ def infer_verified_rows(
                 query_text=query_text,
                 cand=cand,
                 uq_default=uq_default,
+                query_source=query_source,
+                audio_confidence=audio_conf,
             )
             scored.append((cand, score))
         scored.sort(key=lambda x: x[1]["reliability_score"], reverse=True)
@@ -254,7 +290,7 @@ def infer_verified_rows(
                 "taxonomy_version": "",
                 "threshold_source": threshold_source,
                 "runtime_config": runtime_cfg.to_dict(),
-                "evidence": {"visual_score": 0.0, "text_score": 0.0, "uq_score": 1.0},
+                "evidence": {"visual_score": 0.0, "text_score": 0.0, "uq_score": 1.0, "fusion_mode": "no_candidates", "w_visual": 1.0, "w_audio": 0.0},
             }
             rows.append(row)
             continue
@@ -286,8 +322,11 @@ def infer_verified_rows(
                 "runtime_config": score["runtime_config"],
                 "evidence": {
                     "visual_score": float(score["visual_score"]),
-                    "text_score": float(score["text_score"]),
+                    "text_score": float(score["text_score"]) if not (isinstance(score.get("text_score"), float) and score["text_score"] != score["text_score"]) else None,
                     "uq_score": float(score["uq_score"]),
+                    "fusion_mode": str(score.get("fusion_mode", "unknown")),
+                    "w_visual": float(score.get("w_visual", 1.0)),
+                    "w_audio": float(score.get("w_audio", 0.0)),
                 },
             }
             rows.append(row)

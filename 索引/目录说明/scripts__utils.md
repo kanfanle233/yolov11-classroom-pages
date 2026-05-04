@@ -13,14 +13,14 @@
 - `scripts/utils/13_semantic_projection.py` (line 162)
 - `scripts/utils/build_verifier_training_samples.py` (line 63)
 
-## 上游依赖（静态线索）
+## 上游依赖
 - 自动扫描未命中固定规则
 
-## 下游产物（静态线索）
+## 下游产物
 - 自动扫描未命中固定规则
 
 ## 文件清单
-| 文件 | LOC | 入口 | 说明 |
+| file | LOC | entry | description |
 | --- | --- | --- | --- |
 | 02b_check_jsonl_schema.py | 157 | yes | Validate formal verifier contract artifacts. |
 | 12_export_features.py | 191 | yes |  |

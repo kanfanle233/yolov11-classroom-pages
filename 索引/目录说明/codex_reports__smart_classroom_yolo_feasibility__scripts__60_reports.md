@@ -9,13 +9,13 @@
 ## 入口脚本
 - `codex_reports/smart_classroom_yolo_feasibility/scripts/60_reports/build_paper_pipeline_report.py` (line 196)
 
-## 上游依赖（静态线索）
+## 上游依赖
 - 自动扫描未命中固定规则
 
-## 下游产物（静态线索）
+## 下游产物
 - 自动扫描未命中固定规则
 
 ## 文件清单
-| 文件 | LOC | 入口 | 说明 |
+| file | LOC | entry | description |
 | --- | --- | --- | --- |
 | build_paper_pipeline_report.py | 197 | yes | Build paper-ready assets and a pipeline report. |

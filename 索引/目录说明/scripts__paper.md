@@ -13,14 +13,14 @@
 - `scripts/paper/32_build_d3og_selected_figures.py` (line 1066)
 - `scripts/paper/33_build_repo_report_alignment.py` (line 1704)
 
-## 上游依赖（静态线索）
+## 上游依赖
 - 自动扫描未命中固定规则
 
-## 下游产物（静态线索）
+## 下游产物
 - 自动扫描未命中固定规则
 
 ## 文件清单
-| 文件 | LOC | 入口 | 说明 |
+| file | LOC | entry | description |
 | --- | --- | --- | --- |
 | 30_build_paper_figures_tables.py | 1393 | yes | Build paper figures/tables from existing experiment outputs. |
 | 31_build_paper_figures_curated.py | 901 | yes | Build curated paper figures after full-repo traversal audit. |

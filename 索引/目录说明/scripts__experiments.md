@@ -17,14 +17,14 @@
 - `scripts/experiments/25_split_test_set.py` (line 150)
 - `scripts/experiments/26_diag_tracking_quality.py` (line 137)
 
-## 上游依赖（静态线索）
+## 上游依赖
 - 自动扫描未命中固定规则
 
-## 下游产物（静态线索）
+## 下游产物
 - 自动扫描未命中固定规则
 
 ## 文件清单
-| 文件 | LOC | 入口 | 说明 |
+| file | LOC | entry | description |
 | --- | --- | --- | --- |
 | 16_run_rear_row_sr_ablation.py | 809 | yes | Run and collect rear-row ROI SR ablation metrics. |
 | 17_build_sr_ablation_paper_summary.py | 253 | yes | Build cross-case paper table for SR ablations. |

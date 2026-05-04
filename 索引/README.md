@@ -1,6 +1,6 @@
 # 索引文档体系
 
-本目录由 `refresh_index.py` 自动生成或刷新，用于让后续 Codex 快速理解项目结构、主流程、脚本定位、后排增强实验和当前风险。
+本目录由 `refresh_index.py` 自动生成或刷新，用于让后续协作者快速理解项目结构、主流程、脚本定位、前后端现状和风险边界。
 
 ## 一键刷新
 
@@ -17,14 +17,16 @@
 - `目录说明/*.md`
 - `data/file_inventory_all.csv`
 - `data/source_scope_inventory.csv`
+- `data/output_inventory.csv`
+- `data/output_summary.json`
 - `data/entrypoints.json`
 - `data/pipeline_steps.json`
 - `data/index_stats.json`
 - `data/risks.json`
+- `data/server_frontend_state.json`
+- `data/yolo_paper_docs.json`
 
 ## 口径说明
-- `roots` 默认只扫描 `codex_reports scripts`。
-- `scope=self_first`：目录说明跳过 `scripts/pipeline/ultralytics` 和缓存目录。
-- `loc_mode=full`：全量 LOC 只输出一个主指标；自研 LOC 仅作为目录说明辅助。
-- 当前推荐主线：`track_backend=hybrid`，pose track 负责学生身份，8 类行为检测负责行为语义挂载。
-- 当前后排增强主线：`full_sliced/rear_adaptive + 可选 ROI SR/去噪去模糊 + pose-backbone fusion`。
+- `roots` 默认扫描 `codex_reports scripts output server web_viz yolo论文`。
+- `scope=self_first`：目录说明跳过缓存目录与 `scripts/pipeline/ultralytics`。
+- `yolo论文/` 中的背景/研究报告可用于解释语境，但方案文档默认按“规划/待落地”处理。

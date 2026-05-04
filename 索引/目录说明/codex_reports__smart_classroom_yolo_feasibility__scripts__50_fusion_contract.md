@@ -19,14 +19,14 @@
 - `codex_reports/smart_classroom_yolo_feasibility/scripts/50_fusion_contract/semanticize_behavior_det.py` (line 95)
 - `codex_reports/smart_classroom_yolo_feasibility/scripts/50_fusion_contract/semanticize_objects.py` (line 61)
 
-## 上游依赖（静态线索）
+## 上游依赖
 - 自动扫描未命中固定规则
 
-## 下游产物（静态线索）
+## 下游产物
 - 自动扫描未命中固定规则
 
 ## 文件清单
-| 文件 | LOC | 入口 | 说明 |
+| file | LOC | entry | description |
 | --- | --- | --- | --- |
 | behavior_det_to_actions_v2.py | 262 | yes | Convert semantic behavior detections to semantic action rows. |
 | build_event_queries_fusion_v2.py | 141 | yes | Merge ASR event queries with visual fallback queries for fusion v2. |

@@ -9,13 +9,13 @@
 ## 入口脚本
 - `codex_reports/smart_classroom_yolo_feasibility/scripts/20_scb/scb_tasks.py` (line 81)
 
-## 上游依赖（静态线索）
+## 上游依赖
 - 自动扫描未命中固定规则
 
-## 下游产物（静态线索）
+## 下游产物
 - 自动扫描未命中固定规则
 
 ## 文件清单
-| 文件 | LOC | 入口 | 说明 |
+| file | LOC | entry | description |
 | --- | --- | --- | --- |
 | scb_tasks.py | 82 | yes | SCB stage placeholders (reserved by design). |

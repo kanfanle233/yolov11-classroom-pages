@@ -35,14 +35,14 @@
 - `scripts/pipeline/10_visualize_timeline.py` (line 881)
 - `scripts/pipeline/xx_align_multimodal.py` (line 266)
 
-## 上游依赖（静态线索）
+## 上游依赖
 - 自动扫描未命中固定规则
 
-## 下游产物（静态线索）
+## 下游产物
 - 自动扫描未命中固定规则
 
 ## 文件清单
-| 文件 | LOC | 入口 | 说明 |
+| file | LOC | entry | description |
 | --- | --- | --- | --- |
 | 01_pose_video_demo.py | 104 | yes |  |
 | 02_export_keypoints_jsonl.py | 287 | yes |  |

@@ -240,6 +240,33 @@
             padding: 3px 8px; border-radius: 10px; font-size: 11px;
             font-weight: 600; background: #eee; color: #555; border: 1px solid transparent;
         }
+        .evidence-grid {
+            display: grid; grid-template-columns: 92px 1fr 44px; gap: 7px 8px;
+            align-items: center; font-size: 11px; color: #52677a;
+        }
+        .evidence-track {
+            height: 7px; border-radius: 999px; background: #edf2f7; overflow: hidden;
+        }
+        .evidence-fill {
+            height: 100%; border-radius: 999px; background: linear-gradient(90deg, #0984e3, #16a34a);
+        }
+        .event-pill {
+            display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px;
+            border-radius: 999px; background: #eef6ff; color: #126fbe; font-size: 11px; font-weight: 700;
+        }
+        .event-pill.mismatch { background: #fff1f2; color: #dc2626; }
+        .event-pill.uncertain { background: #fffbeb; color: #b45309; }
+        .event-pill.unverified { background: #f1f5f9; color: #64748b; }
+        .gantt-bar.status-mismatch {
+            stroke: #dc2626; stroke-width: 1.8px; animation: mismatchPulse 1.5s infinite;
+        }
+        .gantt-bar.status-uncertain {
+            stroke: #f59e0b; stroke-width: 1.4px; stroke-dasharray: 3 2;
+        }
+        @keyframes mismatchPulse {
+            0%, 100% { filter: drop-shadow(0 0 0 rgba(220, 38, 38, 0)); }
+            50% { filter: drop-shadow(0 0 6px rgba(220, 38, 38, 0.65)); }
+        }
 
         /* Feature Content */
         #pc-container { flex: 1; min-height: 200px; width: 100%; padding: 0; overflow: hidden; position: relative; }
@@ -749,7 +776,30 @@
             if (this.mode === 'static' && this.staticManifest) {
                 return this.staticManifest.cases;
             }
-            return fetchJsonStrict(`${CONFIG.API_BASE}/list_cases`);
+            const cases = await fetchJsonStrict(`${CONFIG.API_BASE}/list_cases`).catch(() => []);
+            const bundles = await fetchJsonLoose(`${CONFIG.API_BASE}/bundle/list`) || [];
+            const out = Array.isArray(cases) ? cases.slice() : [];
+            const seen = new Set(out.map(x => typeof x === "string" ? x : x?.video_id).filter(Boolean));
+            bundles.forEach((item) => {
+                const id = item?.case_id;
+                if (!id || seen.has(id)) return;
+                seen.add(id);
+                out.push({
+                    view: "frontend_bundle",
+                    video_id: id,
+                    case_id: id,
+                    label: id,
+                    path: `output/frontend_bundle/${id}`,
+                    ready_for_frontend: true,
+                    paper_package: true,
+                    fusion_v2_ready: true,
+                    mainline_ready: item?.contract_status === "ok",
+                    timeline_ready: true,
+                    bundle_case: true,
+                    counts: { tracked_students: item?.students || 0 },
+                });
+            });
+            return out;
         },
 
         async manifest(caseId) {
@@ -817,6 +867,11 @@
                     verifierCalibration,
                 },
             };
+        },
+
+        async visualizationCaseData(caseId) {
+            if (this.mode === 'static') return null;
+            return fetchJsonLoose(`${CONFIG.API_BASE}/v1/visualization/case_data?case_id=${encodeURIComponent(caseId)}`);
         },
 
         async media(caseId) {
@@ -913,6 +968,7 @@
             tracksData: {},
             manifestData: null,
             artifacts: {},
+            visualizationData: null,
             projectionData: null,
             isLoading: false,
             videoDuration: 0,
@@ -922,6 +978,7 @@
             videoUrls: {},
             filteredIds: null,
             selectedTrackId: null,
+            selectedEvent: null,
             videoFrameDataUrl: null,
             videoFrameSize: { w: 0, h: 0 },
             spatialScene: null,
@@ -980,8 +1037,10 @@
             this.state.currentCaseId = caseId;
             this.state.isLoading = true;
             this.state.selectedTrackId = null; // Reset selection
+            this.state.selectedEvent = null;
             this.state.manifestData = null;
             this.state.artifacts = {};
+            this.state.visualizationData = null;
             this.notify("loadingStart");
 
             this.state.videoUrls = await resolveVideoUrls(caseId, this.state.caseMap[caseId]);
@@ -995,21 +1054,37 @@
             this.state.timelineZoomRange = null;
 
             try {
-                const [tl, tr, trk, st, artifacts] = await Promise.all([
+                const [tl, tr, trk, st, artifacts, bff] = await Promise.all([
                     DataSource.timeline(caseId).catch(()=>({})),
                     DataSource.transcript(caseId).catch(()=>([])),
                     DataSource.tracks(caseId).catch(()=>({})),
                     DataSource.stats(caseId).catch(()=>({})),
-                    DataSource.loadArtifacts(caseId).catch(() => ({ manifest: null }))
+                    DataSource.loadArtifacts(caseId).catch(() => ({ manifest: null })),
+                    DataSource.visualizationCaseData(caseId).catch(() => null)
                 ]);
-                this.state.manifestData = artifacts?.manifest || null;
-                this.state.artifacts = artifacts || {};
+                const bffData = bff?.status === "success" ? bff.data : null;
+                const mergedArtifacts = { ...(artifacts || {}) };
+                if (bffData) {
+                    mergedArtifacts.visualizationEvents = Array.isArray(bffData.events) ? bffData.events : [];
+                    mergedArtifacts.verifiedEvents = Array.isArray(bffData.verified_events)
+                        ? bffData.verified_events
+                        : (mergedArtifacts.verifiedEvents || []);
+                    mergedArtifacts.eventQueries = Array.isArray(bffData.event_queries)
+                        ? bffData.event_queries
+                        : (mergedArtifacts.eventQueries || []);
+                    mergedArtifacts.caseInfo = bffData.case_info || {};
+                }
+                this.state.visualizationData = bffData;
+                this.state.manifestData = mergedArtifacts?.manifest || null;
+                this.state.artifacts = mergedArtifacts;
 
                 // Normalize Timeline
                 const persons = [], groups = [];
-                const timelineItems = Array.isArray(tl)
+                const timelineItems = Array.isArray(bffData?.timeline_segments) && bffData.timeline_segments.length
+                    ? bffData.timeline_segments
+                    : (Array.isArray(tl)
                     ? tl
-                    : (Array.isArray(tl?.items) ? tl.items : []);
+                    : (Array.isArray(tl?.items) ? tl.items : []));
                 timelineItems.forEach(raw => {
                     if (!raw || typeof raw !== "object") return;
                     const d = { ...raw };
@@ -1112,8 +1187,10 @@
             document.getElementById('btn-proj-apply').click();
         },
 
-        setSelection(id) {
-            this.state.selectedTrackId = (this.state.selectedTrackId === id) ? null : id;
+        setSelection(id, eventModel = null) {
+            const sameTrack = Number(this.state.selectedTrackId) === Number(id);
+            this.state.selectedTrackId = (sameTrack && !eventModel) ? null : id;
+            this.state.selectedEvent = this.state.selectedTrackId ? eventModel : null;
             this.notify("selectionChanged");
         },
 
@@ -1194,6 +1271,58 @@
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;");
+    }
+
+    function renderEvidenceCard(eventModel) {
+        if (!eventModel?.evidence_metrics) return "";
+        const metrics = eventModel.evidence_metrics || {};
+        const rows = [
+            ["C_visual", Number(metrics.c_visual || 0)],
+            ["C_text", Number(metrics.c_text || 0)],
+            ["1-UQ", Math.max(0, 1 - Number(metrics.uq_track || 0))],
+            ["W_visual", Number(metrics.weight_v || 0)],
+            ["W_audio", Number(metrics.weight_a || 0)],
+            ["Reliability", Number(metrics.reliability_final || 0)],
+        ];
+        const status = String(eventModel.verification_status || "unverified");
+        const timeRange = Array.isArray(eventModel.time_range) ? eventModel.time_range : [eventModel.start, eventModel.end];
+        const asr = eventModel.semantics?.asr_text || "";
+        const polygon = rows.map(([, v], i) => {
+            const a = (-90 + i * 60) * Math.PI / 180;
+            const r = 8 + Math.max(0, Math.min(1, v)) * 34;
+            return `${50 + Math.cos(a) * r},${50 + Math.sin(a) * r}`;
+        }).join(" ");
+        return `
+            <div class="story-card">
+                <div class="story-title" style="font-size:13px;">
+                    <span>BFF Evidence Detail</span>
+                    <span class="event-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>
+                </div>
+                <div style="display:grid; grid-template-columns:110px 1fr; gap:14px; align-items:center;">
+                    <svg width="105" height="105" viewBox="0 0 100 100">
+                        <circle cx="50" cy="50" r="42" fill="#f8fafc" stroke="#dbe7f3"></circle>
+                        <circle cx="50" cy="50" r="25" fill="none" stroke="#e5edf5"></circle>
+                        ${rows.map(([, v], i) => {
+                            const a = (-90 + i * 60) * Math.PI / 180;
+                            return `<line x1="50" y1="50" x2="${50 + Math.cos(a) * 42}" y2="${50 + Math.sin(a) * 42}" stroke="#e5edf5" stroke-width="0.8"></line>`;
+                        }).join("")}
+                        <polygon points="${polygon}" fill="rgba(9,132,227,0.28)" stroke="#0984e3" stroke-width="2"></polygon>
+                    </svg>
+                    <div class="evidence-grid">
+                        ${rows.map(([label, v]) => {
+                            const pct = Math.max(0, Math.min(1, v)) * 100;
+                            return `<span>${label}</span><div class="evidence-track"><div class="evidence-fill" style="width:${pct.toFixed(0)}%"></div></div><b>${pct.toFixed(0)}%</b>`;
+                        }).join("")}
+                    </div>
+                </div>
+                <div class="story-text" style="margin-top:10px;">
+                    Event <b>${escapeHtml(eventModel.event_id || "")}</b>,
+                    ${formatTime(Number(timeRange?.[0] || 0))}-${formatTime(Number(timeRange?.[1] || 0))},
+                    behavior <b>${escapeHtml(eventModel.behavior_type || eventModel.action || "unknown")}</b>.
+                    ${asr ? `ASR: ${escapeHtml(asr)}` : `No ASR text; BFF uses vision-only weights.`}
+                </div>
+            </div>
+        `;
     }
 
     function baseNameFromPath(value) {
@@ -1795,6 +1924,7 @@
         document.getElementById("btn-reset-filters").addEventListener("click", () => {
             Store.state.filteredIds = null;
             Store.state.selectedTrackId = null;
+            Store.state.selectedEvent = null;
             Store.notify("selectionChanged");
             Store.notify("filterChanged");
             d3.select("#pc-container .brush").call(d3.brushX().move, null);
@@ -1959,9 +2089,11 @@
 
         // Highlight Gantt
         d3.selectAll(".gantt-bar")
-            .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.1 : 1);
+            .style("opacity", d => (state.selectedTrackId && Number(d.track_id) !== Number(state.selectedTrackId)) ? 0.1 : 1);
+        d3.selectAll(".gantt-uncertain-overlay")
+            .style("opacity", d => (state.selectedTrackId && Number(d.track_id) !== Number(state.selectedTrackId)) ? 0.08 : 0.9);
         d3.selectAll(".timeline-cell")
-            .style("opacity", d => (state.selectedTrackId && d.track_id !== state.selectedTrackId) ? 0.22 : 1);
+            .style("opacity", d => (state.selectedTrackId && Number(d.track_id) !== Number(state.selectedTrackId)) ? 0.22 : 1);
 
         // Highlight PC lines
         d3.selectAll(".pc-line")
@@ -2015,6 +2147,7 @@
             .filter(v => Number(v.track_id) === Number(tid))
             .sort((a, b) => Number(a.query_time ?? a.window_start ?? 0) - Number(b.query_time ?? b.window_start ?? 0))
             .slice(0, 6);
+        const selectedEvent = state.selectedEvent;
 
         // Construct Story HTML
         let mood = "Neutral";
@@ -2043,6 +2176,8 @@
                     }).join('')}
                 </div>
             </div>
+
+            ${renderEvidenceCard(selectedEvent)}
 
             <div class="story-card">
                 <div class="story-title" style="font-size:13px;">Timeline Snapshot</div>
@@ -2104,11 +2239,22 @@
             .filter(d => d.e > d.s);
 
         const svg = d3.select(container).append("svg").attr("width", w).attr("height", svgH);
+        const defs = svg.append("defs");
+        const stripe = defs.append("pattern")
+            .attr("id", "uncertain-stripe")
+            .attr("patternUnits", "userSpaceOnUse")
+            .attr("width", 6)
+            .attr("height", 6)
+            .attr("patternTransform", "rotate(45)");
+        stripe.append("rect").attr("width", 2).attr("height", 6).attr("fill", "rgba(245,158,11,0.45)");
 
         svg.selectAll("rect.gantt-bar")
             .data(visible)
             .enter().append("rect")
-            .attr("class", "gantt-bar")
+            .attr("class", d => {
+                const status = String(d.verification_status || d.match_label || d.label || "unverified");
+                return `gantt-bar status-${status}`;
+            })
             .attr("x", d => x(d.s))
             .attr("y", d => margin.top + d.row * rowH + 1)
             .attr("width", d => Math.max(1, x(d.e) - x(d.s)))
@@ -2117,9 +2263,22 @@
             .attr("rx", 2)
             .style("opacity", d => (state.selectedTrackId && Number(state.selectedTrackId) !== Number(d.track_id)) ? 0.1 : 1)
             .on("click", (e, d) => {
-                Store.setSelection(d.track_id);
+                Store.setSelection(d.track_id, d);
                 document.getElementById("myVideo").currentTime = Number(d.start) || 0;
             });
+
+        svg.selectAll("rect.gantt-uncertain-overlay")
+            .data(visible.filter(d => String(d.verification_status || d.match_label || d.label || "") === "uncertain"))
+            .enter().append("rect")
+            .attr("class", "gantt-uncertain-overlay")
+            .attr("x", d => x(d.s))
+            .attr("y", d => margin.top + d.row * rowH + 1)
+            .attr("width", d => Math.max(1, x(d.e) - x(d.s)))
+            .attr("height", Math.max(4, rowH - 2))
+            .attr("fill", "url(#uncertain-stripe)")
+            .attr("rx", 2)
+            .style("pointer-events", "none")
+            .style("opacity", d => (state.selectedTrackId && Number(state.selectedTrackId) !== Number(d.track_id)) ? 0.08 : 0.9);
 
         const verified = (state.artifacts?.verifiedEvents || [])
             .map((d) => {
@@ -2142,7 +2301,9 @@
             .attr("stroke-width", 1.4)
             .style("cursor", "pointer")
             .on("click", (e, d) => {
-                Store.setSelection(d.track_id);
+                const eventModel = (Store.state.artifacts?.visualizationEvents || [])
+                    .find(x => String(x.event_id || "") === String(d.event_id || d.query_id || ""));
+                Store.setSelection(d.track_id, eventModel || null);
                 document.getElementById("myVideo").currentTime = Number(d.query_time) || 0;
             });
 

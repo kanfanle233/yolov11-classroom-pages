@@ -3,15 +3,17 @@ import sys
 import json
 import csv
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from functools import lru_cache
 import inspect
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 import numpy as np
@@ -74,6 +76,26 @@ PAPER_MAINLINE_ALIASES = {
     "paper_package_20260426",
     "run_full_paper_mainline_001",
 }
+
+# =========================================================
+# Video search configuration (for browser-compatible playback)
+# =========================================================
+# Priority order: .web.mp4 (H.264) > .mp4 (original codec)
+VIDEO_CANDIDATE_NAMES = [
+    "pose_behavior_fusion_yolo11x.web.mp4",
+    "pose_demo_yolo11x.web.mp4",
+    "video.web.mp4",
+    "pose_behavior_fusion_yolo11x.mp4",
+    "pose_demo_yolo11x.mp4",
+    "video.mp4",
+]
+
+# Directories to search for video files (in order)
+MEDIA_SEARCH_DIRS = [
+    PROJECT_ROOT / "docs" / "assets" / "videos",
+    PROJECT_ROOT / "output" / "codex_reports",
+    PROJECT_ROOT / "output" / "frontend_bundle",
+]
 
 # 浣犵殑鍓嶇妯℃澘涓€鑸湪 web_viz/templates锛涘鏋滄病鏈夊氨鍥為€€鍒伴」鐩牴鐩綍
 TEMPLATE_DIR = (PROJECT_ROOT / "web_viz" / "templates")
@@ -246,6 +268,95 @@ def _path_to_public_url(path: Optional[Path]) -> Optional[str]:
     return None
 
 
+def _ffmpeg_binary() -> Optional[str]:
+    for candidate in (shutil.which("ffmpeg"), shutil.which("ffmpeg.exe")):
+        if candidate:
+            return candidate
+    # Common local Windows install used in this workspace.
+    for fallback in (
+        Path(r"F:\ffmpeg\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"),
+        Path(r"F:\ffmpeg\bin\ffmpeg.exe"),
+    ):
+        try:
+            if fallback.exists():
+                return str(fallback)
+        except Exception:
+            continue
+    return None
+
+
+def _browser_proxy_video_path(src: Path) -> Path:
+    if src.name.lower().endswith(".web.mp4"):
+        return src
+    return src.with_name(f"{src.stem}.web.mp4")
+
+
+def _ensure_browser_friendly_video(src: Optional[Path]) -> Optional[Path]:
+    if src is None:
+        return None
+    try:
+        if not src.exists() or not src.is_file():
+            return None
+    except Exception:
+        return None
+
+    if src.name.lower().endswith(".web.mp4"):
+        return src
+
+    proxy = _browser_proxy_video_path(src)
+    if _is_nonempty_file(proxy, min_bytes=4096):
+        return proxy
+
+    ffmpeg_bin = _ffmpeg_binary()
+    if ffmpeg_bin is None:
+        return src
+
+    tmp = proxy.with_name(f"{proxy.stem}.tmp.mp4")
+    try:
+        if tmp.exists():
+            tmp.unlink()
+    except Exception:
+        pass
+
+    cmd = [
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(src),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-profile:v",
+        "high",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "24",
+        "-movflags",
+        "+faststart",
+        str(tmp),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        tmp.replace(proxy)
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        return src
+
+    return proxy if proxy.exists() else src
+
+
 _VIEW_TO_DATA_SUBDIR: Dict[str, str] = {
     "front": "正方视角",
     "rear": "后方视角",
@@ -390,6 +501,25 @@ def _resolve_overlay_video_path(video_id: str, case_dir: Path) -> Optional[Path]
     overlay_candidates = sorted(case_dir.glob("*_overlay.mp4"))
     if overlay_candidates:
         return overlay_candidates[0]
+    preferred = [
+        case_dir / "pose_behavior_fusion_yolo11x.mp4",
+        case_dir / "overlay.mp4",
+        case_dir / "video_overlay.mp4",
+        case_dir / "pose_behavior_video.mp4",
+    ]
+    for p in preferred:
+        if p.exists():
+            return p
+    manifest = _read_json_file(case_dir / "pipeline_manifest.json", {})
+    if isinstance(manifest, dict):
+        artifacts = manifest.get("artifacts", {})
+        if isinstance(artifacts, dict):
+            for key in ("pose_behavior_video", "overlay_video"):
+                raw = str(artifacts.get(key) or "").strip()
+                if raw:
+                    p = Path(raw)
+                    if p.exists():
+                        return p
     return _find_docs_video_path(video_id, "overlay")
 
 
@@ -441,6 +571,94 @@ def _resolve_original_video_path(video_id: str, case_dir: Path) -> Optional[Path
     if p is None:
         p = _resolve_overlay_video_path(video_id, case_dir)
     return p if p and p.exists() else None
+
+
+# =========================================================
+# Browser-friendly video search (independent of case directory)
+# =========================================================
+
+def _find_playable_video(case_id: str) -> Optional[Path]:
+    """Search for the best playable video using priority names and multi-directory search.
+
+    Search order per directory:
+      1. {dir}/{case_id}/{VIDEO_CANDIDATE_NAME}        (direct match)
+      2. {dir}/{case_id}/assets/{VIDEO_CANDIDATE_NAME}  (frontend_bundle layout)
+      3. {dir}/{case_id}.web.mp4                        (flat .web.mp4)
+      4. {dir}/{case_id}.mp4                            (flat .mp4)
+
+    The first .web.mp4 (H.264) found wins over any .mp4 (original codec).
+    """
+    for search_dir in MEDIA_SEARCH_DIRS:
+        if not search_dir.exists():
+            continue
+
+        case_subdir = search_dir / case_id
+
+        # ── Pattern A: {dir}/{case_id}/{name} ──
+        if case_subdir.is_dir():
+            for name in VIDEO_CANDIDATE_NAMES:
+                p = case_subdir / name
+                if p.is_file():
+                    return p
+
+            # ── Pattern B: {dir}/{case_id}/assets/{name} ──
+            assets_dir = case_subdir / "assets"
+            if assets_dir.is_dir():
+                for name in VIDEO_CANDIDATE_NAMES:
+                    p = assets_dir / name
+                    if p.is_file():
+                        return p
+
+            # ── Pattern C: recursive fallback inside case dir ──
+            for pattern in ("*.web.mp4", "*.mp4"):
+                for p in sorted(case_subdir.rglob(pattern)):
+                    return p
+
+        # ── Pattern D: {dir}/{case_id}.web.mp4 ──
+        p = search_dir / f"{case_id}.web.mp4"
+        if p.is_file():
+            return p
+
+        # ── Pattern E: {dir}/{case_id}.mp4 ──
+        p = search_dir / f"{case_id}.mp4"
+        if p.is_file():
+            return p
+
+    return None
+
+
+def _list_all_searched_paths(case_id: str) -> List[str]:
+    """Enumerate all possible search paths for debug output."""
+    paths: List[str] = []
+    for search_dir in MEDIA_SEARCH_DIRS:
+        paths.append(f"[dir] {search_dir}")
+        if not search_dir.exists():
+            paths.append(f"    (SKIPPED — directory does not exist)")
+            continue
+        case_subdir = search_dir / case_id
+        for name in VIDEO_CANDIDATE_NAMES:
+            paths.append(f"    {case_subdir / name}")
+            paths.append(f"    {case_subdir / 'assets' / name}")
+        paths.append(f"    {search_dir / f'{case_id}.web.mp4'}")
+        paths.append(f"    {search_dir / f'{case_id}.mp4'}")
+    return paths
+
+
+def _parse_range(range_header: str, file_size: int) -> Optional[Tuple[int, int]]:
+    """Parse HTTP Range header value (e.g. 'bytes=0-1023') into (start, end)."""
+    try:
+        match = re.match(r"bytes=(\d+)-(\d*)$", range_header.strip())
+        if not match:
+            return None
+        start = int(match.group(1))
+        end_str = match.group(2)
+        end = int(end_str) if end_str else file_size - 1
+        end = min(end, file_size - 1)
+        if start >= file_size or start > end:
+            return None
+        return (start, end)
+    except Exception:
+        return None
 
 
 def _is_nonempty_file(path: Path, min_bytes: int = 1) -> bool:
@@ -615,6 +833,7 @@ def _case_dir_quality(case_dir: Path) -> int:
 def _looks_like_case_dir(case_dir: Path) -> bool:
     """Heuristic: a runnable case folder should contain at least one core pipeline artifact."""
     markers = [
+        "frontend_data_manifest.json",
         "timeline_chart.json",
         "timeline_viz.json",
         "per_person_sequences.json",
@@ -1699,10 +1918,13 @@ def get_media(video_id: str):
 
     view_name, case_id = _extract_case_tokens(video_id, case_dir)
     overlay_path = _resolve_overlay_video_path(video_id, case_dir)
-    overlay_url = _path_to_public_url(overlay_path)
+    browser_overlay_path = _ensure_browser_friendly_video(overlay_path)
+    overlay_url = _path_to_public_url(browser_overlay_path or overlay_path)
+    browser_overlay_url = _path_to_public_url(browser_overlay_path)
 
     original_path = _resolve_original_video_path(video_id, case_dir)
     original_url = f"/api/media/{video_id}/original" if original_path and original_path.exists() else None
+    browser_original_url = _path_to_public_url(_ensure_browser_friendly_video(original_path))
 
     def _u(name: str) -> Optional[str]:
         return _path_to_public_url(case_dir / name)
@@ -1712,7 +1934,9 @@ def get_media(video_id: str):
         "view": view_name,
         "case_id": case_id,
         "original": original_url,
+        "browser_original": browser_original_url,
         "overlay": overlay_url,
+        "browser_overlay": browser_overlay_url,
         "pose_demo": _u("pose_demo_out.mp4"),
         "objects_demo": _u("objects_demo_out.mp4"),
         "timeline_png": _u("timeline_chart.png"),
@@ -1733,6 +1957,94 @@ def get_media_original(video_id: str):
     if p is None or (not p.exists()):
         raise HTTPException(404, f"Original video not found: {video_id}")
     return FileResponse(str(p))
+
+
+@app.api_route("/api/media/stream/{case_id}", methods=["GET", "HEAD"])
+def get_media_stream(case_id: str, request: Request):
+    """Serve the best playable video file with browser-compatible codec.
+
+    Searches MEDIA_SEARCH_DIRS using VIDEO_CANDIDATE_NAMES priority.
+    Supports HTTP Range requests for browser video seeking.
+    Returns debug JSON with searched paths when no video is found.
+    """
+    path = _find_playable_video(case_id)
+    if path is None or not path.exists():
+        searched = _list_all_searched_paths(case_id)
+        return JSONResponse(
+            status_code=404,
+            content={
+                "case_id": case_id,
+                "searched": searched,
+                "message": "No playable media found",
+            },
+        )
+
+    file_size = path.stat().st_size
+    range_header = request.headers.get("range")
+
+    # HEAD request — return headers only, no body
+    if request.method == "HEAD":
+        return Response(
+            status_code=200,
+            media_type="video/mp4",
+            headers={
+                "Content-Length": str(file_size),
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-store",
+            },
+        )
+
+    # ── Handle HTTP Range (byte serving) for browser seeking ──
+    if range_header:
+        parsed = _parse_range(range_header, file_size)
+        if parsed is not None:
+            start, end = parsed
+            content_length = end - start + 1
+
+            def _iter_file():
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    remaining = content_length
+                    while remaining > 0:
+                        chunk = f.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+
+            return StreamingResponse(
+                _iter_file(),
+                status_code=206,
+                media_type="video/mp4",
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Length": str(content_length),
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "no-store",
+                },
+            )
+
+    # ── Full-file response with range-advertisement header ──
+    return FileResponse(
+        str(path),
+        media_type="video/mp4",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/api/debug/routes")
+def debug_routes():
+    """List all registered routes for debugging."""
+    routes_list = []
+    for r in app.routes:
+        methods = getattr(r, "methods", None)
+        methods_str = sorted(methods) if methods else None
+        path = getattr(r, "path", str(r))
+        routes_list.append({"path": path, "methods": methods_str})
+    return {"routes": routes_list}
 
 
 @app.get("/api/case/{video_id}/manifest")
@@ -1993,6 +2305,390 @@ def get_bundle_verified(case_id: str):
     return _get_bundle_json(case_id, "verified_events.json")
 
 
+# =========================================================
+# BFF Aggregation Endpoint: Unified View Model for D3
+# =========================================================
+
+def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    """Read a JSONL file into a list of dicts."""
+    rows: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows
+
+
+def _json_list(payload: Any, *keys: str) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        for key in keys:
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                return [x for x in rows if isinstance(x, dict)]
+    return []
+
+
+def _interval_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
+    inter = min(a1, b1) - max(a0, b0)
+    if inter <= 0:
+        return 0.0
+    denom = max(1e-6, min(a1 - a0, b1 - b0))
+    return inter / denom
+
+
+def _first_value(*values: Any, default: Any = None) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return default
+
+
+def _safe_metric(value: Any, default: float = 0.0) -> float:
+    out = _safe_float(value, default)
+    if out != out:
+        return default
+    return out
+
+
+def _event_window(row: Dict[str, Any]) -> Tuple[float, float]:
+    window = row.get("window") if isinstance(row.get("window"), dict) else {}
+    center = _safe_metric(_first_value(row.get("query_time"), row.get("timestamp"), row.get("t_center")), 0.0)
+    start = _safe_metric(_first_value(window.get("start"), row.get("window_start"), row.get("start")), center - 1.5)
+    end = _safe_metric(_first_value(window.get("end"), row.get("window_end"), row.get("end")), center + 1.5)
+    if end < start:
+        start, end = end, start
+    return start, end
+
+
+def _event_key(row: Dict[str, Any]) -> str:
+    return str(row.get("event_id") or row.get("query_id") or "").strip()
+
+
+def _load_bundle_queries(bundle: Optional[Path], manifest: Dict[str, Any], cid: str) -> List[Dict[str, Any]]:
+    candidates: List[Path] = []
+    if bundle is not None:
+        candidates.extend([
+            bundle / "event_queries.json",
+            bundle / "event_queries.jsonl",
+            bundle / "event_queries.fusion_v2.jsonl",
+        ])
+
+    source_files = manifest.get("source_files") if isinstance(manifest.get("source_files"), dict) else {}
+    for value in source_files.values():
+        raw = str(value or "")
+        if "event_queries" in raw:
+            candidates.append(Path(raw))
+
+    source_case_dir = str(manifest.get("source_case_dir") or "").strip()
+    if source_case_dir:
+        src = Path(source_case_dir)
+        candidates.extend([
+            src / "event_queries.fusion_v2.jsonl",
+            src / "event_queries.jsonl",
+            src / "event_queries.visual_fallback.jsonl",
+        ])
+
+    raw_case = _find_case_dir(cid)
+    if raw_case is not None:
+        candidates.extend([
+            raw_case / "event_queries.fusion_v2.jsonl",
+            raw_case / "event_queries.jsonl",
+            raw_case / "event_queries.visual_fallback.jsonl",
+        ])
+
+    seen: set[str] = set()
+    rows: List[Dict[str, Any]] = []
+    for path in candidates:
+        key = str(path)
+        if key in seen or not path.exists():
+            continue
+        seen.add(key)
+        if path.suffix.lower() == ".jsonl":
+            rows.extend(_read_jsonl(path))
+        else:
+            rows.extend(_json_list(_read_json_file(path, []), "events", "queries", "items"))
+    return rows
+
+
+def _load_case_bundle_payloads(cid: str) -> Tuple[Optional[Path], Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    bundle = _find_bundle(cid)
+    manifest: Dict[str, Any] = {}
+    segments: List[Dict[str, Any]] = []
+    verified_events: List[Dict[str, Any]] = []
+
+    if bundle is not None:
+        manifest = _read_json_file(bundle / "frontend_data_manifest.json", {})
+        timeline = _read_json_file(bundle / "timeline_students.json", {})
+        segments = _json_list(timeline, "segments", "items")
+        verified = _read_json_file(bundle / "verified_events.json", {})
+        verified_events = _json_list(verified, "events", "items")
+
+    if not segments or not verified_events:
+        raw_case = _find_case_dir(cid)
+        if raw_case is None and bundle is None:
+            raise HTTPException(404, f"Case {cid} not found in bundle or raw outputs")
+        if raw_case is not None:
+            if not segments:
+                timeline_path = raw_case / "timeline_chart.json"
+                if not timeline_path.exists():
+                    timeline_path = raw_case / "timeline_students.json"
+                if not timeline_path.exists():
+                    timeline_path = raw_case / "timeline_students.csv"
+                if timeline_path.suffix.lower() == ".csv":
+                    segments = _coerce_rows(_read_csv_rows(timeline_path))
+                else:
+                    segments = _json_list(_read_json_file(timeline_path, []), "segments", "items")
+            if not verified_events:
+                verified_events = _read_jsonl(raw_case / "verified_events.jsonl")
+
+    if not segments:
+        raise HTTPException(404, f"No timeline segments found for {cid}")
+    return bundle, manifest, segments, verified_events
+
+
+def _bff_action_id(row: Dict[str, Any], behavior: str) -> int:
+    code_map = {
+        "tt": 0,  # listen
+        "dk": 8,  # read
+        "js": 6,  # raise hand
+        "jt": 4,  # chat/discussion
+        "wt": 1,  # distraction
+        "sj": 2,  # phone
+        "dt": 3,  # doze/head down
+    }
+    for key in ("semantic_id", "semantic_label_en", "behavior_type", "action", "raw_action", "action_label"):
+        action_id = _parse_action_id(row.get(key), row.get("action_id", -1))
+        if action_id >= 0:
+            return action_id
+    norm = _normalize_action_name(behavior)
+    if "raise" in norm:
+        return 6
+    if "read" in norm:
+        return 8
+    if "listen" in norm:
+        return 0
+    code = str(row.get("behavior_code") or "").strip().lower()
+    return code_map.get(code, _parse_action_id(behavior, row.get("action_id", -1)))
+
+
+@app.get("/api/v1/visualization/case_data")
+async def get_visualization_case_data(
+    case_id: str = Query(..., description="Case id, for example front_45618_sliced"),
+):
+    """
+    BFF aggregation endpoint for the D3 frontend.
+    The server joins timeline segments, verified events, and ASR/LLM queries into
+    frontend-ready view models. Bundle files are preferred; raw case outputs are
+    used as fallbacks through frontend_data_manifest.source_case_dir.
+    """
+    cid = str(case_id or "").strip()
+    if not cid:
+        raise HTTPException(400, "case_id is required")
+
+    from collections import defaultdict
+
+    bundle, manifest, segments, verified_events = _load_case_bundle_payloads(cid)
+    query_rows = _load_bundle_queries(bundle, manifest, cid)
+    query_map: Dict[str, Dict[str, Any]] = {}
+    for q in query_rows:
+        key = _event_key(q)
+        if key:
+            query_map[key] = q
+
+    ve_index: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    ve_by_key: Dict[str, Dict[str, Any]] = {}
+    for ve in verified_events:
+        key = _event_key(ve)
+        if key:
+            ve_by_key[key] = ve
+        tid = ve.get("track_id")
+        if tid is None:
+            continue
+        try:
+            tid_int = int(tid)
+        except Exception:
+            continue
+        ws, we = _event_window(ve)
+        ve_index[tid_int].append({**ve, "_ws": ws, "_we": we})
+
+    view_events: List[Dict[str, Any]] = []
+    timeline_segments: List[Dict[str, Any]] = []
+    track_ids: set = set()
+    max_time = 0.0
+
+    for seg in segments:
+        tid_raw = _first_value(seg.get("track_id"), seg.get("student_id"))
+        try:
+            tid = int(str(tid_raw).replace("S", "").replace("_", ""))
+        except Exception:
+            continue
+        track_ids.add(tid)
+
+        seg_start = _safe_metric(_first_value(seg.get("start_time"), seg.get("start"), seg.get("window_start"), seg.get("t")), 0.0)
+        seg_end = _safe_metric(_first_value(seg.get("end_time"), seg.get("end"), seg.get("window_end")), seg_start + 0.2)
+        if seg_end < seg_start:
+            seg_start, seg_end = seg_end, seg_start
+        max_time = max(max_time, seg_end)
+
+        behavior = str(_first_value(
+            seg.get("semantic_id"),
+            seg.get("semantic_label_en"),
+            seg.get("behavior_type"),
+            seg.get("behavior_code"),
+            seg.get("action"),
+            default="unknown",
+        ))
+        action_id = _bff_action_id(seg, behavior)
+
+        best_ve = ve_by_key.get(str(seg.get("event_id") or ""))
+        best_ov = 0.0
+        if not best_ve:
+            for ve in ve_index.get(tid, []):
+                ov = _interval_overlap(seg_start, seg_end, _safe_metric(ve.get("_ws"), 0.0), _safe_metric(ve.get("_we"), 0.0))
+                center = _safe_metric(_first_value(ve.get("query_time"), ve.get("timestamp"), ve.get("t_center")), 0.0)
+                if seg_start <= center <= seg_end:
+                    ov = max(ov, 1e-3)
+                if ov > best_ov:
+                    best_ov = ov
+                    best_ve = ve
+        best_ve = best_ve or {}
+
+        eid = _event_key(best_ve) or str(seg.get("event_id") or f"seg_{tid}_{int(seg_start * 1000)}")
+        q_data = query_map.get(eid, {})
+        evidence = best_ve.get("evidence") if isinstance(best_ve.get("evidence"), dict) else {}
+
+        asr_text = str(_first_value(
+            q_data.get("asr_text"),
+            q_data.get("query_text"),
+            q_data.get("trigger_text"),
+            best_ve.get("asr_text"),
+            best_ve.get("query_text"),
+            default="",
+        ))
+        is_visual_fallback = asr_text.startswith("visual_fallback")
+        is_vision_only = not asr_text or is_visual_fallback
+
+        c_visual = _safe_metric(_first_value(
+            evidence.get("c_visual"), evidence.get("cv"), evidence.get("visual_score"), seg.get("confidence")
+        ), 0.8)
+        c_text = _safe_metric(_first_value(
+            evidence.get("c_text"), evidence.get("ct"), evidence.get("text_score")
+        ), 0.0 if is_vision_only else 0.5)
+        uq_track = _safe_metric(_first_value(
+            evidence.get("uq_track"), evidence.get("uq"), evidence.get("uq_score"), best_ve.get("uncertainty")
+        ), 0.1)
+
+        wv_raw = _first_value(evidence.get("weight_v"), evidence.get("wv"), evidence.get("w_visual"))
+        wa_raw = _first_value(evidence.get("weight_a"), evidence.get("wa"), evidence.get("w_audio"))
+        weight_v = _safe_metric(wv_raw, 1.0 if is_vision_only else 0.5)
+        weight_a = _safe_metric(wa_raw, 0.0 if is_vision_only else 0.5)
+        weight_sum = weight_v + weight_a
+        if weight_sum > 1e-9:
+            weight_v, weight_a = weight_v / weight_sum, weight_a / weight_sum
+        else:
+            weight_v, weight_a = 1.0, 0.0
+
+        reliability = _safe_metric(_first_value(
+            evidence.get("reliability"),
+            evidence.get("r"),
+            best_ve.get("reliability_score"),
+            best_ve.get("reliability"),
+        ), max(0.0, min(1.0, weight_v * c_visual + weight_a * c_text - 0.1 * uq_track)))
+        label_status = str(_first_value(best_ve.get("match_label"), best_ve.get("label"), default="unverified"))
+        if label_status not in {"match", "mismatch", "uncertain", "unverified"}:
+            label_status = "uncertain"
+
+        metrics = {
+            "c_visual": round(c_visual, 4),
+            "c_text": round(0.0 if is_vision_only else c_text, 4),
+            "uq_track": round(uq_track, 4),
+            "weight_v": round(weight_v, 4),
+            "weight_a": round(0.0 if is_vision_only else weight_a, 4),
+            "reliability_final": round(reliability, 4),
+        }
+        semantics = {
+            "asr_text": "" if is_visual_fallback else asr_text,
+            "instruction_type": str(_first_value(q_data.get("instruction_type"), q_data.get("event_type"), best_ve.get("event_type"), default="none")),
+        }
+
+        event_model = {
+            "event_id": eid,
+            "track_id": f"S_{tid:02d}",
+            "time_range": [round(seg_start, 2), round(seg_end, 2)],
+            "behavior_type": behavior,
+            "verification_status": label_status,
+            "semantics": semantics,
+            "evidence_metrics": metrics,
+        }
+        view_events.append(event_model)
+
+        timeline_segments.append({
+            **seg,
+            "event_id": eid,
+            "track_id": tid,
+            "student_id": seg.get("student_id") or f"S{tid:02d}",
+            "start": round(seg_start, 4),
+            "end": round(seg_end, 4),
+            "start_time": round(seg_start, 4),
+            "end_time": round(seg_end, 4),
+            "action_id": action_id,
+            "action": behavior,
+            "behavior_type": behavior,
+            "verification_status": label_status,
+            "semantics": semantics,
+            "evidence_metrics": metrics,
+            "reliability_score": metrics["reliability_final"],
+        })
+
+    normalized_verified: List[Dict[str, Any]] = []
+    for ve in verified_events:
+        item = {**ve}
+        ws, we = _event_window(ve)
+        item["window_start"] = round(ws, 4)
+        item["window_end"] = round(we, 4)
+        item["query_time"] = round(_safe_metric(_first_value(ve.get("query_time"), ve.get("timestamp"), ve.get("t_center")), (ws + we) / 2), 4)
+        if "reliability" not in item and "reliability_score" in item:
+            item["reliability"] = item.get("reliability_score")
+        normalized_verified.append(item)
+
+    view_events.sort(key=lambda e: (e["time_range"][0], e["track_id"]))
+    timeline_segments.sort(key=lambda e: (_safe_metric(e.get("track_id"), 0.0), _safe_metric(e.get("start"), 0.0)))
+
+    source_case_dir = str(manifest.get("source_case_dir") or "") if isinstance(manifest, dict) else ""
+
+    return {
+        "status": "success",
+        "data": {
+            "case_info": {
+                "case_id": cid,
+                "bundle_case": bundle is not None,
+                "bundle_path": str(bundle) if bundle is not None else "",
+                "source_case_dir": source_case_dir,
+                "duration_sec": round(max_time, 1),
+                "student_count": len(track_ids),
+                "timeline_event_count": len(timeline_segments),
+                "verified_event_count": len(normalized_verified),
+                "query_event_count": len(query_map),
+            },
+            "events": view_events,
+            "timeline_segments": timeline_segments,
+            "verified_events": normalized_verified,
+            "event_queries": query_rows,
+        }
+    }
+
+
 @app.get("/paper/bundle/{case_id}")
 @app.get("/paper/bundle/{case_id}/")
 async def paper_demo_case_page(case_id: str, request: Request):
@@ -2009,7 +2705,1484 @@ async def paper_demo_case_page(case_id: str, request: Request):
 
 
 # =========================================================
-# 9) Mount frontend bundles as static and start
+# 9) V2 VSumVis APIs
+#    Canonical routes: /api/v2/vsumvis/*
+#    Compatibility routes: /api/v2/front/*
+# =========================================================
+
+FRONT_REPORTS_DIR = (OUTPUT_DIR / "codex_reports").resolve()
+VALID_CASE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+FRONT_DIR_PREFIX = "front_"
+VSUMVIS_VALID_FILES = {
+    "timeline_chart.json",
+    "timeline_viz.json",
+    "timeline_students.csv",
+    "timeline_students.json",
+    "verified_events.jsonl",
+    "verified_events.json",
+    "actions.fusion_v2.jsonl",
+    "frontend_data_manifest.json",
+    "sr_ablation_metrics.json",
+}
+VSUMVIS_EXCLUDED_NAMES = {"cache", "__pycache__", ".git", ".ultralytics"}
+VSUMVIS_EXCLUDED_PREFIXES = ("_tmp",)
+
+
+def _safe_child_dirs(root: Path) -> List[Path]:
+    try:
+        return [p for p in sorted(root.iterdir()) if p.is_dir()]
+    except Exception:
+        return []
+
+
+def _is_vsumvis_excluded_dir(path: Path) -> bool:
+    parts = [p.lower() for p in path.parts]
+    if any(p in VSUMVIS_EXCLUDED_NAMES for p in parts):
+        return True
+    name = path.name.lower()
+    return any(name.startswith(prefix) for prefix in VSUMVIS_EXCLUDED_PREFIXES)
+
+
+def _is_vsumvis_case_dir(case_dir: Path) -> bool:
+    if _is_vsumvis_excluded_dir(case_dir):
+        return False
+    try:
+        if not case_dir.exists() or not case_dir.is_dir():
+            return False
+    except Exception:
+        return False
+    for name in VSUMVIS_VALID_FILES:
+        try:
+            if _is_nonempty_file(case_dir / name, min_bytes=1):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+_VSUMVIS_SKIP_SUBDIR_PATTERNS: tuple = (
+    # sr_ablation variant subdirectories (A0, A1, A2, ...)
+    re.compile(r"^A\d+_", re.IGNORECASE),
+    # specific internal subdirs
+    re.compile(r"^rear_row_failure_cases$", re.IGNORECASE),
+    re.compile(r"^failures$", re.IGNORECASE),
+    re.compile(r"^logs$", re.IGNORECASE),
+)
+
+
+def _is_vsumvis_skip_subdir(path: Path) -> bool:
+    name = path.name
+    for pat in _VSUMVIS_SKIP_SUBDIR_PATTERNS:
+        if pat.match(name):
+            return True
+    return False
+
+
+def _iter_vsumvis_dirs() -> List[Path]:
+    """Return valid VSumVis data directories from output, codex reports, and bundles."""
+    roots: List[Path] = []
+    if FRONT_REPORTS_DIR.exists():
+        roots.append(FRONT_REPORTS_DIR)
+    if BUNDLE_DIR.exists():
+        roots.append(BUNDLE_DIR)
+
+    candidates: List[Path] = []
+    seen: set[str] = set()
+
+    def _push(path: Path) -> None:
+        try:
+            resolved = str(path.resolve())
+        except Exception:
+            resolved = str(path)
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        candidates.append(path)
+
+    for root in roots:
+        for child in _safe_child_dirs(root):
+            if _is_vsumvis_excluded_dir(child):
+                continue
+            if _is_vsumvis_skip_subdir(child):
+                continue
+            _push(child)
+            # Look one level deeper for nested case dirs inside run/ directories.
+            # Only recurse into directories that look like "run_*" containers.
+            if child.name.lower().startswith("run_"):
+                for grandchild in _safe_child_dirs(child):
+                    if not _is_vsumvis_excluded_dir(grandchild) and not _is_vsumvis_skip_subdir(grandchild):
+                        _push(grandchild)
+
+    # Also scan top-level output/ for standalone case directories.
+    if OUTPUT_DIR.exists():
+        for child in _safe_child_dirs(OUTPUT_DIR):
+            if child.name in {"codex_reports", "frontend_bundle", "docs", "vendor"}:
+                continue
+            if _is_vsumvis_excluded_dir(child):
+                continue
+            if _is_vsumvis_skip_subdir(child):
+                continue
+            _push(child)
+
+    out: List[Path] = []
+    for candidate in candidates:
+        if _is_vsumvis_case_dir(candidate):
+            out.append(candidate)
+
+    # Deduplicate by directory name: keep the richest copy.
+    by_name: Dict[str, List[Path]] = {}
+    for p in out:
+        by_name.setdefault(p.name, []).append(p)
+    deduped: List[Path] = []
+    for paths in by_name.values():
+        if len(paths) == 1:
+            deduped.append(paths[0])
+        else:
+            # Keep the path with the highest score (most artifacts, largest files).
+            paths.sort(key=lambda p: _case_dir_quality(p), reverse=True)
+            deduped.append(paths[0])
+
+    return sorted(deduped, key=_vsumvis_case_sort_key)
+
+
+def _iter_front_dirs() -> List[Path]:
+    """Compatibility wrapper for the old front route family."""
+    return _iter_vsumvis_dirs()
+
+
+def _find_front_case_dir(case_id: str) -> Optional[Path]:
+    if not VALID_CASE_ID_RE.fullmatch(case_id):
+        return None
+    for child in _iter_vsumvis_dirs():
+        if child.name == case_id:
+            return child
+    return None
+
+
+def _front_url(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        rel = resolved.relative_to(OUTPUT_DIR.resolve())
+        return f"/output/{rel.as_posix()}"
+    except Exception:
+        pass
+    try:
+        rel = resolved.relative_to(PROJECT_ROOT.resolve())
+        return f"/{rel.as_posix()}"
+    except Exception:
+        return resolved.as_posix()
+
+
+def _vsumvis_data_source(case_dir: Path) -> str:
+    try:
+        case_dir.resolve().relative_to(BUNDLE_DIR.resolve())
+        return "frontend_bundle"
+    except Exception:
+        pass
+    try:
+        case_dir.resolve().relative_to(FRONT_REPORTS_DIR.resolve())
+        return "codex_reports"
+    except Exception:
+        pass
+    return "raw_output"
+
+
+def _vsumvis_case_sort_key(case_dir: Path) -> Tuple[int, int, int, int, int, str]:
+    name = case_dir.name
+    source = _vsumvis_data_source(case_dir)
+    source_rank = 0 if source == "codex_reports" else (1 if source == "frontend_bundle" else 2)
+    front_rank = 0 if name.startswith(FRONT_DIR_PREFIX) else 1
+    kind_rank = 1 if "sr_ablation" in name.lower() else 0
+    verified_rank = 0 if _is_nonempty_file(case_dir / "verified_events.jsonl") or _is_nonempty_file(case_dir / "verified_events.json") else 1
+    rich_rank = 0 if (
+        _is_nonempty_file(case_dir / "pose_behavior_fusion_yolo11x.mp4")
+        or _is_nonempty_file(case_dir / "frontend_data_manifest.json")
+        or _is_nonempty_file(case_dir / "pipeline_contract_v2_report.json")
+    ) else 1
+    return (front_rank, kind_rank, source_rank, verified_rank, rich_rank, name)
+
+
+def _front_case_kind(case_dir: Path) -> str:
+    name = case_dir.name.lower()
+    if "sr_ablation" in name:
+        return "sr_ablation"
+    return "full"
+
+
+def _front_video_stem(case_dir: Path) -> str:
+    """Extract video stem from case dir name e.g. front_45618_full -> 45618."""
+    name = case_dir.name
+    if name.startswith("front_"):
+        rest = name[len("front_"):]
+        for suffix in ("_sr_ablation", "_full", "_full_pose020_hybrid", "_rear_row_sliced_pose020_hybrid"):
+            if rest.endswith(suffix):
+                return rest[: -len(suffix)]
+        return rest
+    return name
+
+
+def _front_count_students(case_dir: Path) -> int:
+    bundle_manifest = _read_json_file(case_dir / "frontend_data_manifest.json", {})
+    if isinstance(bundle_manifest, dict) and bundle_manifest:
+        tracked = _safe_float(bundle_manifest.get("tracked_students"), 0.0)
+        if tracked > 0:
+            return int(tracked)
+        students = bundle_manifest.get("students")
+        if isinstance(students, list) and students:
+            return len(students)
+    # try student_id_map.json first
+    sid_map = _read_json_file(case_dir / "student_id_map.json", {})
+    if isinstance(sid_map, dict):
+        students = sid_map.get("students")
+        if isinstance(students, list) and students:
+            return len(students)
+        sc = sid_map.get("student_count")
+        if isinstance(sc, (int, float)) and sc > 0:
+            return int(sc)
+        if sid_map and "student_count" not in sid_map and "students" not in sid_map:
+            return len(sid_map)
+    # try counting unique track_ids from timeline_chart.json
+    tl = _read_json_file(case_dir / "timeline_chart.json", {})
+    items = _json_list(tl, "items")
+    if items:
+        tids = {i.get("track_id") for i in items if isinstance(i, dict)}
+        if tids:
+            return len(tids)
+    # try CSV
+    csv_rows = _read_csv_rows(case_dir / "timeline_students.csv")
+    if csv_rows:
+        tids = set()
+        for r in csv_rows:
+            for k in ("track_id", "student_id"):
+                v = r.get(k)
+                if v is not None:
+                    tids.add(str(v))
+        return len(tids)
+    # for sr_ablation: try to read from sr_ablation_metrics.json best variant
+    sr_data = _read_json_file(case_dir / "sr_ablation_metrics.json", {})
+    if isinstance(sr_data, dict):
+        variants = sr_data.get("variants", [])
+        if isinstance(variants, list):
+            for v in variants:
+                sc = v.get("tracked_students")
+                if sc is not None and int(sc) > 0:
+                    return int(sc)
+    return 0
+
+
+def _front_count_events(case_dir: Path) -> tuple:
+    """Return (verified_count, timeline_event_count, query_count)."""
+    ve_count = 0
+    ve_path = case_dir / "verified_events.jsonl"
+    if ve_path.exists():
+        with open(ve_path, "r", encoding="utf-8") as f:
+            ve_count = sum(1 for line in f if line.strip())
+    elif (case_dir / "verified_events.json").exists():
+        verified = _read_json_file(case_dir / "verified_events.json", {})
+        ve_count = len(_json_list(verified, "events", "items"))
+    tl = _read_json_file(case_dir / "timeline_chart.json", {})
+    tl_items = _json_list(tl, "items")
+    tl_count = len(tl_items)
+    if tl_count == 0:
+        bundle_tl = _read_json_file(case_dir / "timeline_students.json", {})
+        tl_count = len(_json_list(bundle_tl, "segments", "items"))
+    eq_count = 0
+    eq_path = case_dir / "event_queries.fusion_v2.jsonl"
+    if eq_path.exists():
+        with open(eq_path, "r", encoding="utf-8") as f:
+            eq_count = sum(1 for line in f if line.strip())
+    elif (case_dir / "event_queries.json").exists():
+        queries = _read_json_file(case_dir / "event_queries.json", {})
+        eq_count = len(_json_list(queries, "events", "queries", "items"))
+    return ve_count, tl_count, eq_count
+
+
+def _front_duration_sec(case_dir: Path) -> float:
+    raw_timeline = _read_timeline_segments_front(case_dir)
+    items = _json_list(raw_timeline, "items") if isinstance(raw_timeline, dict) else raw_timeline
+    max_end = 0.0
+    for it in items:
+        ed = _safe_float(it.get("end") or it.get("end_time"), 0.0)
+        if ed > max_end:
+            max_end = ed
+    if max_end > 0:
+        return round(max_end, 1)
+    # fallback: manifest
+    manifest = _read_json_file(case_dir / "pipeline_manifest.json", {})
+    if isinstance(manifest, dict):
+        dur = _safe_float(manifest.get("duration_sec") or manifest.get("duration"), 0.0)
+        if dur > 0:
+            return round(dur, 1)
+    # fallback for sr_ablation: use stage_runtime_sec from variant data
+    sr_data = _read_json_file(case_dir / "sr_ablation_metrics.json", {})
+    if isinstance(sr_data, dict):
+        variants = sr_data.get("variants", [])
+        if isinstance(variants, list):
+            for v in variants:
+                dur = _safe_float(v.get("stage_runtime_sec"), 0.0)
+                if dur > 0:
+                    return round(dur, 1)
+            # try v["pose_person_rows"] / v["effective_fps"]
+            for v in variants:
+                rows = _safe_float(v.get("pose_person_rows"), 0.0)
+                fps = _safe_float(v.get("effective_fps"), 0.0)
+                if rows > 0 and fps > 0:
+                    return round(rows / fps, 1)
+    return 0.0
+
+
+def _front_sparkline(case_dir: Path) -> List[Dict[str, Any]]:
+    """Generate a lightweight sparkline summary from timeline segments."""
+    items = _read_timeline_segments_front(case_dir)
+    if not items:
+        sr_data = _read_json_file(case_dir / "sr_ablation_metrics.json", {})
+        variants = sr_data.get("variants", []) if isinstance(sr_data, dict) else []
+        if isinstance(variants, list) and variants:
+            return [
+                {"t": i, "count": _safe_float(v.get("tracked_students") or v.get("rear_pose_person_rows_proxy"), 0.0)}
+                for i, v in enumerate(variants[:30])
+            ]
+        return []
+    duration = _front_duration_sec(case_dir)
+    if duration <= 0:
+        duration = max(_safe_float(i.get("end") or i.get("end_time"), 0.0) for i in items)
+    bins = 30
+    bin_w = max(duration / bins, 0.5)
+    if bin_w <= 0:
+        return []
+    histogram = [0] * bins
+    for it in items:
+        st = _safe_float(it.get("start") or it.get("start_time"), 0.0)
+        ed = _safe_float(it.get("end") or it.get("end_time"), st)
+        bi = int(st / bin_w)
+        if 0 <= bi < bins:
+            histogram[bi] += 1
+    return [{"t": round(i * bin_w, 1), "count": int(c)} for i, c in enumerate(histogram)]
+
+
+def _front_contract_status(case_dir: Path) -> str:
+    report = _read_json_file(case_dir / "pipeline_contract_v2_report.json", {})
+    if not report:
+        report = _read_json_file(case_dir / "fusion_contract_report.json", {})
+    status = str(report.get("status", "")).lower() if isinstance(report, dict) else ""
+    if status in ("ok", "pass", "passed"):
+        return "OK"
+    if status == "failed":
+        return "FAIL"
+    if _is_nonempty_file(case_dir / "pipeline_contract_v2_report.json", min_bytes=8):
+        return "OK"
+    if _is_nonempty_file(case_dir / "fusion_contract_report.json", min_bytes=8):
+        return "OK"
+    return "WARN"
+
+
+def _front_file_status(case_dir: Path) -> Dict[str, bool]:
+    return {
+        "frontend_data_manifest": _is_nonempty_file(case_dir / "frontend_data_manifest.json"),
+        "timeline_chart_json": _is_nonempty_file(case_dir / "timeline_chart.json"),
+        "timeline_viz_json": _is_nonempty_file(case_dir / "timeline_viz.json"),
+        "timeline_students_json": _is_nonempty_file(case_dir / "timeline_students.json"),
+        "timeline_students_csv": _is_nonempty_file(case_dir / "timeline_students.csv"),
+        "verified_events_jsonl": _is_nonempty_file(case_dir / "verified_events.jsonl"),
+        "verified_events_json": _is_nonempty_file(case_dir / "verified_events.json"),
+        "event_queries_jsonl": _is_nonempty_file(case_dir / "event_queries.fusion_v2.jsonl"),
+        "transcript_jsonl": _is_nonempty_file(case_dir / "transcript.jsonl"),
+        "pipeline_manifest": _is_nonempty_file(case_dir / "pipeline_manifest.json"),
+        "student_id_map_json": _is_nonempty_file(case_dir / "student_id_map.json"),
+        "pose_tracks_uq_jsonl": _is_nonempty_file(case_dir / "pose_tracks_smooth_uq.jsonl"),
+        "sr_ablation_json": _is_nonempty_file(case_dir / "sr_ablation_metrics.json"),
+    }
+
+
+def _front_assets(case_dir: Path) -> Dict[str, Optional[str]]:
+    def _url(name: str) -> Optional[str]:
+        p = case_dir / name
+        if not p.exists():
+            return None
+        if p.suffix.lower() == ".mp4" or p.name.lower().endswith(".web.mp4"):
+            p = _ensure_browser_friendly_video(p) or p
+        return _front_url(p)
+    assets = {
+        "overlay_video": _url("pose_behavior_fusion_yolo11x.mp4"),
+        "pose_demo_video": _url("pose_demo_yolo11x.mp4"),
+        "preview_image": _url("pose_behavior_fusion_yolo11x_preview.jpg"),
+        "timeline_png": _url("timeline_chart.png"),
+        "reliability_diagram": _url("verifier_reliability_diagram.svg"),
+        "contact_sheet": _url("sr_ablation_contact_sheet.jpg"),
+    }
+    manifest = _read_json_file(case_dir / "frontend_data_manifest.json", {})
+    manifest_assets = manifest.get("assets") if isinstance(manifest, dict) else None
+    if isinstance(manifest_assets, dict):
+        def _manifest_asset_url(*keys: str) -> Optional[str]:
+            for key in keys:
+                raw = str(manifest_assets.get(key) or "").strip()
+                if not raw:
+                    continue
+                p = case_dir / raw
+                if p.exists():
+                    if p.suffix.lower() == ".mp4" or p.name.lower().endswith(".web.mp4"):
+                        p = _ensure_browser_friendly_video(p) or p
+                    return _front_url(p)
+            return None
+        assets["overlay_video"] = assets["overlay_video"] or _manifest_asset_url("pose_behavior_video", "overlay_video")
+        assets["pose_demo_video"] = assets["pose_demo_video"] or _manifest_asset_url("pose_demo_video")
+        assets["preview_image"] = assets["preview_image"] or _manifest_asset_url("preview", "preview_image")
+        assets["contact_sheet"] = assets["contact_sheet"] or _manifest_asset_url("contact_sheet")
+    return assets
+
+
+def _read_timeline_segments_front(case_dir: Path) -> List[Dict[str, Any]]:
+    """Unified timeline segments from best available source."""
+    items: List[Dict[str, Any]] = []
+
+    # Priority: timeline_chart.json > timeline_viz.json > timeline_students.json > timeline_students.csv > actions.fusion_v2.jsonl
+    tc = case_dir / "timeline_chart.json"
+    if tc.exists():
+        obj = _read_json_file(tc, {})
+        items = _json_list(obj, "items")
+        if items:
+            return items
+
+    tv = case_dir / "timeline_viz.json"
+    if tv.exists():
+        obj = _read_json_file(tv, {})
+        items = _json_list(obj, "items")
+        if items:
+            return items
+
+    ts_json = case_dir / "timeline_students.json"
+    if ts_json.exists():
+        obj = _read_json_file(ts_json, {})
+        items = _json_list(obj, "segments", "items")
+        if items:
+            return items
+
+    csv_rows = _read_csv_rows(case_dir / "timeline_students.csv")
+    if csv_rows:
+        return csv_rows
+
+    actions_path = case_dir / "actions.fusion_v2.jsonl"
+    if actions_path.exists():
+        loaded = _load_jsonl_rows(actions_path)
+        fps = 25.0
+        for meta_file in sorted(case_dir.glob("*.meta.json")):
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                fps = _safe_float(meta.get("fps"), 25.0)
+                break
+            except Exception:
+                continue
+        tl = _timeline_from_actions_rows(loaded, fps=fps)
+        items = tl.get("items", [])
+    return items
+
+
+def _normalize_timeline_segments(raw_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize timeline items to uniform schema."""
+    out: List[Dict[str, Any]] = []
+    for i, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            continue
+        seg_id = str(item.get("segment_id") or item.get("event_id") or f"seg_{i:06d}")
+        track_id = int(_safe_float(item.get("track_id") or item.get("student_id") or item.get("Track ID"), -1))
+        student_id = str(item.get("student_id") or f"S{track_id:02d}" if track_id >= 0 else f"S{i:02d}")
+        st = _safe_float(item.get("start_time") or item.get("start") or item.get("t_start") or item.get("window_start"), 0.0)
+        ed = _safe_float(item.get("end_time") or item.get("end") or item.get("t_end") or item.get("window_end"), st + 0.2)
+        if ed <= st:
+            ed = st + 0.2
+        behavior = str(item.get("semantic_id") or item.get("action") or item.get("behavior_code") or item.get("semantic_label_en") or "unknown")
+        entry = {
+            "segment_id": seg_id,
+            "track_id": track_id,
+            "student_id": student_id,
+            "start_time": round(st, 4),
+            "end_time": round(ed, 4),
+            "t_center": round((st + ed) / 2, 4),
+            "behavior_code": str(item.get("behavior_code") or ""),
+            "semantic_id": str(item.get("semantic_id") or behavior),
+            "semantic_label_zh": str(item.get("semantic_label_zh") or item.get("action_label") or ""),
+            "semantic_label_en": str(item.get("semantic_label_en") or behavior),
+            "confidence": _safe_float(item.get("confidence") or item.get("conf"), 0.0),
+            "verification_status": str(item.get("verification_status") or item.get("match_label") or item.get("label") or "unverified"),
+        }
+        out.append(entry)
+    return out
+
+
+def _read_verified_events_front(case_dir: Path) -> List[Dict[str, Any]]:
+    """Read verified_events.jsonl with normalized fields."""
+    path = case_dir / "verified_events.jsonl"
+    rows: List[Dict[str, Any]] = []
+    if path.exists():
+        rows = _load_jsonl_rows(path)
+    else:
+        json_path = case_dir / "verified_events.json"
+        if json_path.exists():
+            obj = _read_json_file(json_path, {})
+            rows = _json_list(obj, "events", "items")
+    if not rows:
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        ws, we = _event_window(row)
+        q_time = _safe_float(row.get("query_time") or row.get("timestamp") or row.get("t_center"), (ws + we) / 2)
+        entry = {
+            "event_id": str(row.get("event_id") or row.get("query_id") or ""),
+            "query_id": str(row.get("query_id") or row.get("event_id") or ""),
+            "track_id": int(_safe_float(row.get("track_id"), -1)),
+            "query_text": str(row.get("query_text") or ""),
+            "window_start": round(ws, 4),
+            "window_end": round(we, 4),
+            "query_time": round(q_time, 4),
+            "p_match": _safe_float(row.get("p_match"), 0.0),
+            "p_mismatch": _safe_float(row.get("p_mismatch"), 0.0),
+            "reliability_score": _safe_float(row.get("reliability_score") or row.get("reliability"), 0.0),
+            "uncertainty": _safe_float(row.get("uncertainty"), 0.0),
+            "match_label": str(row.get("match_label") or row.get("label") or "unverified"),
+            "action": str(row.get("action") or row.get("semantic_id") or ""),
+            "semantic_id": str(row.get("semantic_id") or ""),
+            "semantic_label_zh": str(row.get("semantic_label_zh") or ""),
+            "semantic_label_en": str(row.get("semantic_label_en") or ""),
+            "evidence": row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
+        }
+        out.append(entry)
+    return out
+
+
+def _read_event_queries_front(case_dir: Path) -> List[Dict[str, Any]]:
+    path = case_dir / "event_queries.fusion_v2.jsonl"
+    if not path.exists():
+        path = case_dir / "event_queries.jsonl"
+    if not path.exists():
+        json_path = case_dir / "event_queries.json"
+        if json_path.exists():
+            obj = _read_json_file(json_path, {})
+            rows = _json_list(obj, "queries", "events", "items")
+            if rows:
+                out: List[Dict[str, Any]] = []
+                for row in rows:
+                    out.append({
+                        "event_id": str(row.get("event_id") or row.get("query_id") or ""),
+                        "query_id": str(row.get("query_id") or row.get("event_id") or ""),
+                        "query_text": str(row.get("query_text") or ""),
+                        "t_center": _safe_float(row.get("t_center") or row.get("timestamp"), 0.0),
+                        "start": _safe_float(row.get("start"), 0.0),
+                        "end": _safe_float(row.get("end"), 0.0),
+                        "confidence": _safe_float(row.get("confidence"), 0.0),
+                        "event_type": str(row.get("event_type") or ""),
+                    })
+                return out
+    if not path.exists():
+        return []
+    rows = _load_jsonl_rows(path)
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append({
+            "event_id": str(row.get("event_id") or row.get("query_id") or ""),
+            "query_id": str(row.get("query_id") or row.get("event_id") or ""),
+            "query_text": str(row.get("query_text") or ""),
+            "t_center": _safe_float(row.get("t_center") or row.get("timestamp"), 0.0),
+            "start": _safe_float(row.get("start"), 0.0),
+            "end": _safe_float(row.get("end"), 0.0),
+            "confidence": _safe_float(row.get("confidence"), 0.0),
+            "event_type": str(row.get("event_type") or ""),
+        })
+    return out
+
+
+def _read_transcript_front(case_dir: Path) -> List[Dict[str, Any]]:
+    path = case_dir / "transcript.jsonl"
+    if not path.exists():
+        return []
+    rows = _load_jsonl_rows(path)
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append({
+            "start": _safe_float(row.get("start"), 0.0),
+            "end": _safe_float(row.get("end"), 0.0),
+            "text": str(row.get("text") or row.get("sentence") or ""),
+            "speaker": str(row.get("speaker") or row.get("role") or "teacher"),
+        })
+    return out
+
+
+def _build_front_feature_rows(
+    timeline_segments: List[Dict[str, Any]],
+    verified_events: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build feature rows for parallel coordinates from timeline + verified events."""
+    ve_by_event: Dict[str, Dict[str, Any]] = {}
+    ve_by_track: Dict[int, List[Dict[str, Any]]] = {}
+    for ve in verified_events:
+        eid = ve.get("event_id", "")
+        if eid:
+            ve_by_event[eid] = ve
+        tid = ve.get("track_id", -1)
+        if tid >= 0:
+            ve_by_track.setdefault(tid, []).append(ve)
+
+    rows: List[Dict[str, Any]] = []
+    for seg in timeline_segments:
+        eid = seg.get("segment_id") or seg.get("event_id") or ""
+        tid = seg.get("track_id", -1)
+        st = seg.get("start_time", 0)
+        ed = seg.get("end_time", st + 0.2)
+
+        # join: event_id exact match, then track_id + time overlap
+        ve = ve_by_event.get(eid)
+        if not ve and tid >= 0:
+            candidates = ve_by_track.get(tid, [])
+            best_ov = 0.0
+            for v in candidates:
+                ov = _interval_overlap(st, ed, v.get("window_start", 0), v.get("window_end", 0))
+                if ov > best_ov:
+                    best_ov = ov
+                    ve = v
+
+        evidence = ve.get("evidence", {}) if ve else {}
+        c_visual = _safe_float(evidence.get("visual_score") or evidence.get("c_visual"), 0.8)
+        c_text = _safe_float(evidence.get("text_score") or evidence.get("c_text"), 0.0)
+        uq_track = _safe_float(evidence.get("uq_score") or evidence.get("uq_track") or ve.get("uncertainty", 0.1) if ve else 0.1, 0.1)
+        weight_v = _safe_float(evidence.get("weight_v") or evidence.get("w_visual"), 0.5)
+        weight_a = _safe_float(evidence.get("weight_a") or evidence.get("w_audio"), 0.5)
+        w_sum = weight_v + weight_a
+        if w_sum > 1e-9:
+            weight_v, weight_a = weight_v / w_sum, weight_a / w_sum
+
+        p_match_val = _safe_float(ve.get("p_match", 0.5) if ve else 0.5, 0.5)
+        p_mismatch_val = _safe_float(ve.get("p_mismatch", 0.5) if ve else 0.5, 0.5)
+
+        reliability = _safe_float(
+            ve.get("reliability_score")
+            or ve.get("reliability")
+            or (weight_v * c_visual + weight_a * c_text - 0.1 * uq_track) if ve else (weight_v * c_visual + weight_a * c_text - 0.1 * uq_track),
+            max(0.0, min(1.0, weight_v * c_visual + weight_a * c_text - 0.1 * uq_track)),
+        )
+
+        action_conf = _safe_float(seg.get("confidence"), 0.0)
+        match_label = str(ve.get("match_label", "unverified") if ve else "unverified")
+
+        rows.append({
+            "event_id": eid if eid else (ve.get("event_id", "") if ve else ""),
+            "track_id": tid,
+            "student_id": seg.get("student_id", ""),
+            "t_center": seg.get("t_center", (st + ed) / 2),
+            "time_range": [round(st, 4), round(ed, 4)],
+            "behavior_code": seg.get("behavior_code", ""),
+            "semantic_id": seg.get("semantic_id", ""),
+            "semantic_label_zh": seg.get("semantic_label_zh", ""),
+            "semantic_label_en": seg.get("semantic_label_en", ""),
+            "c_visual": round(c_visual, 4),
+            "c_text": round(c_text, 4),
+            "uq_track": round(uq_track, 4),
+            "weight_v": round(weight_v, 4),
+            "weight_a": round(weight_a, 4),
+            "reliability_final": round(reliability, 4),
+            "p_match": round(p_match_val, 4),
+            "p_mismatch": round(p_mismatch_val, 4),
+            "action_confidence": round(action_conf, 4),
+            "verification_status": match_label,
+            "overlap": 0.0,
+            "behavior_match_score": 0.0,
+            "pose_conf": 0.0,
+            "visible_kpt_ratio": 0.0,
+            "motion_stability": 0.0,
+        })
+    return rows
+
+
+def _build_front_sequence_series(
+    feature_rows: List[Dict[str, Any]],
+    verified_events: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Build time-sorted sequence data for the bottom timeline chart."""
+    # Use verified events as the primary time axis, supplemented by feature rows
+    if not verified_events:
+        # fallback: use feature_rows sorted by t_center
+        series: List[Dict[str, Any]] = []
+        for row in sorted(feature_rows, key=lambda r: r.get("t_center", 0)):
+            ml = row.get("verification_status", "unverified")
+            score_ref = 1.0 if ml == "match" else (0.5 if ml == "uncertain" else 0.0)
+            series.append({
+                "t": row.get("t_center", 0),
+                "score_model": row.get("p_match", row.get("reliability_final", 0)),
+                "score_reference": score_ref,
+                "reliability": row.get("reliability_final", 0),
+                "uq_track": row.get("uq_track", 0),
+                "c_visual": row.get("c_visual", 0),
+                "c_text": row.get("c_text", 0),
+                "weight_v": row.get("weight_v", 0),
+                "weight_a": row.get("weight_a", 0),
+            })
+        return series
+
+    series = []
+    for ve in sorted(verified_events, key=lambda v: v.get("query_time", v.get("window_start", 0))):
+        qt = ve.get("query_time", (ve.get("window_start", 0) + ve.get("window_end", 0)) / 2)
+        evidence = ve.get("evidence", {})
+        c_visual = _safe_float(evidence.get("visual_score") or evidence.get("c_visual"), 0.8)
+        c_text = _safe_float(evidence.get("text_score") or evidence.get("c_text"), 0.0)
+        uq = ve.get("uncertainty", _safe_float(evidence.get("uq_score"), 0.1))
+
+        w_v = _safe_float(evidence.get("weight_v") or evidence.get("w_visual"), 0.5)
+        w_a = _safe_float(evidence.get("weight_a") or evidence.get("w_audio"), 0.5)
+        ws = w_v + w_a
+        if ws > 1e-9:
+            w_v, w_a = w_v / ws, w_a / ws
+
+        ml = ve.get("match_label", "unverified")
+        score_ref = 1.0 if ml == "match" else (0.5 if ml == "uncertain" else 0.0)
+
+        series.append({
+            "t": round(qt, 2),
+            "score_model": round(ve.get("reliability_score") or ve.get("p_match", 0.0), 4),
+            "score_reference": score_ref,
+            "reliability": round(ve.get("reliability_score") or 0.0, 4),
+            "uq_track": round(uq, 4),
+            "c_visual": round(c_visual, 4),
+            "c_text": round(c_text, 4),
+            "weight_v": round(w_v, 4),
+            "weight_a": round(w_a, 4),
+        })
+    return series
+
+
+def _build_front_projection(
+    feature_rows: List[Dict[str, Any]],
+    unit: str = "event",
+    method: str = "pca",
+) -> List[Dict[str, Any]]:
+    """Build projection points for the scatter view from feature rows."""
+    if not feature_rows:
+        return []
+
+    n = len(feature_rows)
+    vecs = []
+    for row in feature_rows:
+        vecs.append([
+            row.get("c_visual", 0),
+            row.get("c_text", 0),
+            row.get("uq_track", 0),
+            row.get("weight_v", 0),
+            row.get("weight_a", 0),
+            row.get("reliability_final", 0),
+            row.get("p_match", 0),
+            row.get("p_mismatch", 0),
+            row.get("action_confidence", 0),
+        ])
+
+    X = np.array(vecs, dtype=np.float32)
+    # replace NaN
+    X = np.nan_to_num(X, nan=0.0)
+
+    if X.shape[0] < 2:
+        return [{
+            "point_id": f"pt_{i}",
+            "event_id": feature_rows[i].get("event_id", ""),
+            "track_id": feature_rows[i].get("track_id", -1),
+            "t_center": feature_rows[i].get("t_center", 0),
+            "time_range": feature_rows[i].get("time_range", [0, 0]),
+            "x": 0.5, "y": 0.5,
+            "cluster_id": 0,
+            "behavior_code": feature_rows[i].get("behavior_code", ""),
+            "verification_status": feature_rows[i].get("verification_status", "unverified"),
+            "feature_summary": {},
+        } for i in range(len(feature_rows))]
+
+    # Scale
+    X_scaled = StandardScaler().fit_transform(X)
+
+    # Project
+    try:
+        if method == "tsne" and X_scaled.shape[0] > 3:
+            coords = _fit_tsne(X_scaled, metric="euclidean", random_state=42)
+        elif method == "mds":
+            coords = _make_mds("euclidean", random_state=42).fit_transform(X_scaled)
+        else:  # pca
+            coords = PCA(n_components=2, random_state=42).fit_transform(X_scaled)
+    except Exception:
+        coords = PCA(n_components=2, random_state=42).fit_transform(X_scaled)
+
+    # Normalize to 0-1
+    coords = MinMaxScaler().fit_transform(coords)
+
+    # Cluster
+    from sklearn.cluster import KMeans  # type: ignore
+    n_clusters = min(8, max(2, n // 5))
+    try:
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(X_scaled)
+    except Exception:
+        # fallback: group by behavior_code
+        codes = [row.get("behavior_code", "") for row in feature_rows]
+        uniq = sorted(set(codes))
+        code_to_cluster = {c: i for i, c in enumerate(uniq)}
+        labels = [code_to_cluster.get(c, 0) for c in codes]
+
+    points = []
+    for i, row in enumerate(feature_rows):
+        points.append({
+            "point_id": f"pt_{i:06d}",
+            "event_id": row.get("event_id", ""),
+            "track_id": row.get("track_id", -1),
+            "t_center": row.get("t_center", 0),
+            "time_range": row.get("time_range", [0, 0]),
+            "x": round(float(coords[i, 0]), 4),
+            "y": round(float(coords[i, 1]), 4),
+            "cluster_id": int(labels[i]) if i < len(labels) else 0,
+            "behavior_code": row.get("behavior_code", ""),
+            "verification_status": row.get("verification_status", "unverified"),
+            "feature_summary": {
+                "c_visual": row.get("c_visual", 0),
+                "c_text": row.get("c_text", 0),
+                "uq_track": row.get("uq_track", 0),
+                "reliability_final": row.get("reliability_final", 0),
+                "p_match": row.get("p_match", 0),
+                "weight_v": row.get("weight_v", 0),
+                "weight_a": row.get("weight_a", 0),
+            },
+        })
+    return points
+
+
+def _read_sr_ablation_data(case_dir: Path) -> Optional[Dict[str, Any]]:
+    path = case_dir / "sr_ablation_metrics.json"
+    if not path.exists():
+        return None
+    data = _read_json_file(path, {})
+    if not isinstance(data, dict):
+        return None
+    variants = data.get("variants", [])
+    if not isinstance(variants, list):
+        variants = []
+
+    best_variant = None
+    best_f1 = -1.0
+    A0 = None
+    A8 = None
+    for v in variants:
+        f1 = _safe_float(v.get("behavior_macro_f1") or v.get("person_f1"), 0.0)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_variant = v
+        vid = str(v.get("variant", "") or v.get("variant_id", ""))
+        if "A0" in vid and "full_no_sr" in vid:
+            A0 = v
+        if "A8" in vid and "adaptive_sliced" in vid:
+            A8 = v
+
+    A0_vs_A8_delta = None
+    if A0 is not None and A8 is not None:
+        A0_vs_A8_delta = {}
+        for key in (
+            "person_f1", "behavior_macro_f1", "MOTA", "HOTA", "IDSW",
+            "tracked_students", "rear_pose_person_rows_proxy",
+            "stage_runtime_sec", "effective_fps", "avg_pose_conf",
+            "rear_avg_visible_keypoints", "track_gap_count_proxy",
+        ):
+            a0v = _safe_float(A0.get(key), 0.0)
+            a8v = _safe_float(A8.get(key), 0.0)
+            A0_vs_A8_delta[key] = {"A0": a0v, "A8": a8v, "delta": round(a8v - a0v, 4)}
+
+    return {
+        "case_id": case_dir.name,
+        "video_stem": _front_video_stem(case_dir),
+        "variants": variants,
+        "variant_count": len(variants),
+        "best_variant": best_variant,
+        "A0": A0,
+        "A8": A8,
+        "A0_vs_A8_delta": A0_vs_A8_delta,
+        "contact_sheet_url": _front_url(case_dir / "sr_ablation_contact_sheet.jpg") if (case_dir / "sr_ablation_contact_sheet.jpg").exists() else None,
+        "compare_table_url": _front_url(case_dir / "sr_ablation_compare_table.md") if (case_dir / "sr_ablation_compare_table.md").exists() else None,
+    }
+
+
+# ── Shared VSumVis helpers ───────────────────────────────
+
+def _build_vsumvis_case_entry(case_dir: Path) -> Dict[str, Any]:
+    case_id = case_dir.name
+    kind = _front_case_kind(case_dir)
+    video_stem = _front_video_stem(case_dir)
+    file_status = _front_file_status(case_dir)
+    student_count = _front_count_students(case_dir)
+    ve_count, tl_count, eq_count = _front_count_events(case_dir)
+    duration = _front_duration_sec(case_dir)
+    assets = _front_assets(case_dir)
+    sparkline = _front_sparkline(case_dir)
+    contract = _front_contract_status(case_dir)
+    data_source = _vsumvis_data_source(case_dir)
+
+    match_rate = None
+    verified_rows = _read_verified_events_front(case_dir)
+    if verified_rows:
+        total = len(verified_rows)
+        matched = sum(1 for v in verified_rows if v.get("match_label") == "match")
+        uncertain = sum(1 for v in verified_rows if v.get("match_label") == "uncertain")
+        mismatch = sum(1 for v in verified_rows if v.get("match_label") == "mismatch")
+        match_rate = {
+            "total": total,
+            "match": matched,
+            "uncertain": uncertain,
+            "mismatch": mismatch,
+            "match_pct": round(100 * matched / total, 1) if total > 0 else 0,
+        }
+
+    return {
+        "case_id": case_id,
+        "kind": kind,
+        "video_stem": video_stem,
+        "label": f"{video_stem} ({kind})",
+        "data_source": data_source,
+        "file_status": file_status,
+        "student_count": student_count,
+        "event_count": tl_count,
+        "verified_event_count": ve_count,
+        "query_event_count": eq_count,
+        "duration_sec": duration,
+        "contract_status": contract,
+        "assets": assets,
+        "sparkline": sparkline,
+        "match_rate": match_rate,
+    }
+
+
+def _build_vsumvis_case_detail(case_dir: Path, case_id: str) -> Dict[str, Any]:
+    kind = _front_case_kind(case_dir)
+    raw_segments = _read_timeline_segments_front(case_dir)
+    segments = _normalize_timeline_segments(raw_segments)
+    verified = _read_verified_events_front(case_dir)
+    queries = _read_event_queries_front(case_dir)
+    transcript = _read_transcript_front(case_dir)
+    feature_rows = _build_front_feature_rows(segments, verified)
+    seq_series = _build_front_sequence_series(feature_rows, verified)
+    projection = _build_front_projection(feature_rows, unit="event", method="pca")
+
+    duration = _front_duration_sec(case_dir)
+    student_count = _front_count_students(case_dir)
+
+    match_total = len(verified)
+    match_count = sum(1 for v in verified if v.get("match_label") == "match")
+    uncertain_count = sum(1 for v in verified if v.get("match_label") == "uncertain")
+    mismatch_count = sum(1 for v in verified if v.get("match_label") == "mismatch")
+
+    ablation = None
+    if kind == "sr_ablation":
+        ablation = _read_sr_ablation_data(case_dir)
+
+    return {
+        "status": "success",
+        "data": {
+            "case_info": {
+                "case_id": case_id,
+                "kind": kind,
+                "video_stem": _front_video_stem(case_dir),
+                "data_source": _vsumvis_data_source(case_dir),
+                "duration_sec": duration,
+                "student_count": student_count,
+                "timeline_event_count": len(segments),
+                "verified_event_count": match_total,
+                "query_event_count": len(queries),
+                "contract_status": _front_contract_status(case_dir),
+                "pipeline_status": _front_contract_status(case_dir),
+                "match_summary": {
+                    "total": match_total,
+                    "match": match_count,
+                    "uncertain": uncertain_count,
+                    "mismatch": mismatch_count,
+                    "match_rate": round(100 * match_count / match_total, 1) if match_total > 0 else 0,
+                    "uncertain_rate": round(100 * uncertain_count / match_total, 1) if match_total > 0 else 0,
+                    "mismatch_rate": round(100 * mismatch_count / match_total, 1) if match_total > 0 else 0,
+                },
+            },
+            "assets": _front_assets(case_dir),
+            "timeline_segments": segments,
+            "verified_events": verified,
+            "event_queries": queries,
+            "transcript": transcript,
+            "feature_rows": feature_rows[:5000],
+            "sequence_series": seq_series,
+            "projection_points": projection[:5000],
+            "ablation_summary": ablation,
+        },
+    }
+
+
+# ── CANONICAL VSumVis routes (/api/v2/vsumvis/*) ────────
+
+@app.get("/api/v2/vsumvis/cases")
+def get_vsumvis_cases():
+    cases: List[Dict[str, Any]] = []
+    for d in _iter_vsumvis_dirs():
+        cases.append(_build_vsumvis_case_entry(d))
+    return {"status": "success", "cases": cases, "total": len(cases)}
+
+
+@app.get("/api/v2/vsumvis/case/{case_id}")
+def get_vsumvis_case_detail(case_id: str):
+    case_dir = _find_front_case_dir(case_id)
+    if case_dir is None:
+        raise HTTPException(404, f"VSumVis case not found: {case_id}")
+    return _build_vsumvis_case_detail(case_dir, case_id)
+
+
+# ── Cluster statistics ──────────────────────────────────────
+
+def _build_cluster_stats(
+    projection_points: List[Dict[str, Any]],
+    feature_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Compute per-cluster statistics: centroid, size, feature means, status ratios, top behaviors."""
+    if not projection_points or not feature_rows:
+        return []
+
+    # Map event_id → feature_row for quick lookup
+    row_by_eid: Dict[str, Dict[str, Any]] = {}
+    for row in feature_rows:
+        eid = row.get("event_id", "")
+        if eid:
+            row_by_eid[eid] = row
+
+    # Group points by cluster_id
+    clusters: Dict[int, List[Dict[str, Any]]] = {}
+    for pt in projection_points:
+        cid = int(pt.get("cluster_id", 0))
+        clusters.setdefault(cid, []).append(pt)
+
+    result: List[Dict[str, Any]] = []
+    for cid, pts in sorted(clusters.items()):
+        n = len(pts)
+        if n == 0:
+            continue
+
+        # Centroid
+        cx = sum(float(p.get("x", 0)) for p in pts) / n
+        cy = sum(float(p.get("y", 0)) for p in pts) / n
+
+        # Gather feature rows for this cluster
+        cluster_rows = [row_by_eid.get(p.get("event_id", "")) for p in pts]
+        cluster_rows = [r for r in cluster_rows if r is not None]
+
+        # Feature means
+        def _mean(key: str, default: float = 0.0) -> float:
+            vals = [_safe_float(r.get(key, default)) for r in cluster_rows]
+            return round(sum(vals) / len(vals), 4) if vals else 0.0
+
+        # Status ratios
+        status_counts: Dict[str, int] = {"match": 0, "uncertain": 0, "mismatch": 0, "unverified": 0}
+        for pt in pts:
+            s = str(pt.get("verification_status", "unverified")).strip()
+            if s in status_counts:
+                status_counts[s] += 1
+            else:
+                status_counts["unverified"] += 1
+
+        # Top behaviors
+        beh_counts: Dict[str, int] = {}
+        for pt in pts:
+            b = str(pt.get("behavior_code", "") or pt.get("semantic_id", "") or "unknown")
+            beh_counts[b] = beh_counts.get(b, 0) + 1
+        top_behaviors = sorted(beh_counts.items(), key=lambda kv: -kv[1])[:5]
+
+        # IDs in this cluster
+        ids = [p.get("event_id", "") or p.get("point_id", "") for p in pts[:200]]
+
+        # align_score priority: verified_p_match -> p_match -> c_visual*c_text
+        _p_match_val = _mean("p_match", 0.5)
+        _c_vis = _mean("c_visual", 0.5)
+        _c_txt = _mean("c_text", 0.5)
+        _align = _mean("verified_p_match", -1)
+        if _align < 0:
+            _align = _p_match_val
+        if _align <= 0:
+            _align = round(_c_vis * _c_txt, 4)
+
+        result.append({
+            "cluster_id": cid,
+            "size": n,
+            "x": round(cx, 4),
+            "y": round(cy, 4),
+            "feature_mean": {
+                "c_visual": _c_vis,
+                "c_text": _c_txt,
+                "align_score": round(_align, 4),
+                "uq": _mean("uq_track", 0.1),
+                "score_model": _p_match_val,
+            },
+            "status_ratio": {
+                "match": round(status_counts["match"] / n, 3) if n else 0,
+                "uncertain": round(status_counts["uncertain"] / n, 3) if n else 0,
+                "mismatch": round(status_counts["mismatch"] / n, 3) if n else 0,
+            },
+            "top_behaviors": top_behaviors,
+            "ids": ids,
+        })
+    return result
+
+
+@app.get("/api/v2/vsumvis/clusters/{case_id}")
+def get_vsumvis_clusters(case_id: str):
+    """Return per-cluster statistics for Glyph projection mode."""
+    case_dir = _find_front_case_dir(case_id)
+    if case_dir is None:
+        raise HTTPException(404, f"VSumVis case not found: {case_id}")
+    raw_segments = _read_timeline_segments_front(case_dir)
+    segments = _normalize_timeline_segments(raw_segments)
+    verified = _read_verified_events_front(case_dir)
+    feature_rows = _build_front_feature_rows(segments, verified)
+    projection = _build_front_projection(feature_rows, unit="event", method="pca")
+    clusters = _build_cluster_stats(projection, feature_rows)
+    return {"status": "success", "clusters": clusters, "cluster_count": len(clusters)}
+
+
+@app.get("/api/v2/vsumvis/timeline/{case_id}")
+def get_vsumvis_timeline(case_id: str):
+    """Return timeline-structured data: tracks, segments, alignments, frame_series.
+
+    Synthesized from existing pipeline output — no new data files required.
+    """
+    case_dir = _find_front_case_dir(case_id)
+    if case_dir is None:
+        raise HTTPException(404, f"VSumVis case not found: {case_id}")
+
+    raw_segments = _read_timeline_segments_front(case_dir)
+    segments = _normalize_timeline_segments(raw_segments)
+    verified = _read_verified_events_front(case_dir)
+    transcript = _read_transcript_front(case_dir)
+    feature_rows = _build_front_feature_rows(segments, verified)
+    seq_series = _build_front_sequence_series(feature_rows, verified)
+
+    # ── fps ──
+    fps = 25.0
+    for meta_file in sorted(case_dir.glob("*.meta.json")):
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            fps = _safe_float(meta.get("fps"), 25.0)
+            break
+        except Exception:
+            continue
+
+    duration = _front_duration_sec(case_dir)
+
+    # ── Tracks (group segments by track_id) ──
+    track_map: Dict[int, List[Dict[str, Any]]] = {}
+    for seg in segments:
+        tid = int(seg.get("track_id", -1))
+        if tid < 0:
+            continue
+        track_map.setdefault(tid, []).append(seg)
+
+    tracks = []
+    for tid in sorted(track_map.keys()):
+        sgs = track_map[tid]
+        student_id = sgs[0].get("student_id", f"S{tid:02d}") if sgs else f"S{tid:02d}"
+        t_segments = []
+        for s in sgs:
+            eid = s.get("segment_id") or s.get("event_id") or ""
+            # Find matching verified event
+            ve = None
+            for v in verified:
+                if v.get("event_id") == eid or v.get("query_id") == eid:
+                    ve = v
+                    break
+            st = _safe_float(s.get("start_time"), 0.0)
+            ed = _safe_float(s.get("end_time"), st + 0.2)
+            feats = {}
+            for fr in feature_rows:
+                if fr.get("event_id") == eid:
+                    feats = fr
+                    break
+            t_segments.append({
+                "segment_id": eid or f"seg_t{tid}_{len(t_segments):04d}",
+                "start_time": round(st, 4),
+                "end_time": round(ed, 4),
+                "start_frame": int(st * fps),
+                "end_frame": int(ed * fps),
+                "behavior": str(s.get("semantic_label_en") or s.get("behavior_code") or "unknown"),
+                "behavior_code": str(s.get("behavior_code") or ""),
+                "track_id": tid,
+                "student_id": student_id,
+                "c_vis": _safe_float(feats.get("c_visual"), 0.0),
+                "c_txt": _safe_float(feats.get("c_text"), 0.0),
+                "align_score": _safe_float(
+                    feats.get("align_score") or feats.get("alignment_score")
+                    or feats.get("verified_p_match") or feats.get("p_match")
+                    or (_safe_float(feats.get("c_visual"), 0.0) * _safe_float(feats.get("c_text"), 0.0)), 0.0),
+                "uq": _safe_float(feats.get("uq_track"), 0.0),
+                "p_match": _safe_float(feats.get("p_match"), 0.0),
+                "match_status": str(ve.get("match_label") if ve else s.get("verification_status", "unverified")),
+            })
+        tracks.append({
+            "track_id": tid,
+            "student_id": student_id,
+            "segments": t_segments,
+        })
+
+    # ── Transcripts ──
+    transcripts = []
+    for i, t in enumerate(transcript[:500]):
+        transcripts.append({
+            "text_id": f"txt_{i:06d}",
+            "start_time": _safe_float(t.get("start"), 0.0),
+            "end_time": _safe_float(t.get("end"), 0.0),
+            "text": str(t.get("text") or ""),
+            "asr_conf": _safe_float(t.get("asr_conf") or t.get("confidence"), 0.0),
+        })
+
+    # ── Alignments (synthesized: segment-transcript overlap) ──
+    alignments = []
+    for ti, track in enumerate(tracks):
+        for seg in track.get("segments", []):
+            st = seg.get("start_time", 0)
+            ed = seg.get("end_time", 0)
+            # Find overlapping transcript
+            best_txt = None
+            best_ov = 0.0
+            for tx in transcripts:
+                ov = _interval_overlap(st, ed, tx.get("start_time", 0), tx.get("end_time", 0))
+                if ov > best_ov and ov > 0:
+                    best_ov = ov
+                    best_txt = tx
+            if best_txt:
+                alignments.append({
+                    "alignment_id": f"align_{len(alignments):06d}",
+                    "segment_id": seg.get("segment_id", ""),
+                    "text_id": best_txt.get("text_id", ""),
+                    "track_id": track.get("track_id", -1),
+                    "start_time": round(st, 4),
+                    "end_time": round(max(ed, best_txt.get("end_time", ed)), 4),
+                    "start_frame": seg.get("start_frame", 0),
+                    "end_frame": int(max(ed, best_txt.get("end_time", ed)) * fps),
+                    "visual_behavior": seg.get("behavior", "unknown"),
+                    "text_event": best_txt.get("text", "")[:80],
+                    "c_vis": seg.get("c_vis", 0),
+                    "c_txt": best_txt.get("asr_conf", seg.get("c_txt", 0)),
+                    "align_score": round((seg.get("c_vis", 0) + best_txt.get("asr_conf", 0)) / 2, 4),
+                    "uq": seg.get("uq", 0),
+                    "match_status": seg.get("match_status", "unverified"),
+                })
+
+    # ── Frame series (from sequence_series) ──
+    frame_series = []
+    for s in seq_series[:2000]:
+        frame_series.append({
+            "time": round(_safe_float(s.get("t"), 0.0), 2),
+            "score_model": round(_safe_float(s.get("score_model"), 0.5), 4),
+            "score_ref": round(_safe_float(s.get("score_reference"), 0.5), 4),
+            "c_vis": round(_safe_float(s.get("c_visual"), 0.0), 4),
+            "c_txt": round(_safe_float(s.get("c_text"), 0.0), 4),
+            "align_score": round(
+                _safe_float(s.get("c_visual"), 0.0) * _safe_float(s.get("c_text"), 0.0) *
+                _safe_float(s.get("reliability", 0.5)), 4),
+            "uq": round(_safe_float(s.get("uq_track"), 0.0), 4),
+            "match_status": "unverified",
+        })
+
+    return {
+        "status": "success",
+        "data": {
+            "case_id": case_id,
+            "fps": fps,
+            "duration": duration,
+            "tracks": tracks,
+            "transcripts": transcripts,
+            "alignments": alignments,
+            "frame_series": frame_series,
+        },
+    }
+
+
+@app.get("/api/v2/vsumvis/projection/{case_id}")
+def get_vsumvis_projection(
+    case_id: str,
+    unit: str = Query("event"),
+    method: str = Query("pca"),
+):
+    if method not in ("pca", "mds", "tsne"):
+        raise HTTPException(400, "method must be pca, mds, or tsne")
+    if unit not in ("event", "student"):
+        raise HTTPException(400, "unit must be event or student")
+
+    case_dir = _find_front_case_dir(case_id)
+    if case_dir is None:
+        raise HTTPException(404, f"VSumVis case not found: {case_id}")
+
+    raw_segments = _read_timeline_segments_front(case_dir)
+    segments = _normalize_timeline_segments(raw_segments)
+    verified = _read_verified_events_front(case_dir)
+    feature_rows = _build_front_feature_rows(segments, verified)
+
+    if unit == "student":
+        by_track: Dict[int, List[Dict[str, Any]]] = {}
+        for row in feature_rows:
+            tid = row.get("track_id", -1)
+            if tid >= 0:
+                by_track.setdefault(tid, []).append(row)
+        student_rows = []
+        for tid, rows in sorted(by_track.items()):
+            if not rows:
+                continue
+            avg = {
+                "event_id": f"student_{tid}",
+                "track_id": tid,
+                "student_id": rows[0].get("student_id", f"S{tid:02d}"),
+                "t_center": sum(r.get("t_center", 0) for r in rows) / len(rows),
+                "time_range": [min(r.get("time_range", [0, 0])[0] for r in rows),
+                               max(r.get("time_range", [0, 0])[1] for r in rows)],
+                "behavior_code": max(set(r.get("behavior_code", "") for r in rows), key=lambda c: sum(1 for r in rows if r.get("behavior_code") == c)),
+                "semantic_id": max(set(r.get("semantic_id", "") for r in rows), key=lambda c: sum(1 for r in rows if r.get("semantic_id") == c)),
+                "verification_status": "unverified",
+                "c_visual": sum(r["c_visual"] for r in rows) / len(rows),
+                "c_text": sum(r["c_text"] for r in rows) / len(rows),
+                "uq_track": sum(r["uq_track"] for r in rows) / len(rows),
+                "weight_v": sum(r["weight_v"] for r in rows) / len(rows),
+                "weight_a": sum(r["weight_a"] for r in rows) / len(rows),
+                "reliability_final": sum(r["reliability_final"] for r in rows) / len(rows),
+                "p_match": sum(r["p_match"] for r in rows) / len(rows),
+                "p_mismatch": sum(r["p_mismatch"] for r in rows) / len(rows),
+                "action_confidence": sum(r["action_confidence"] for r in rows) / len(rows),
+            }
+            student_rows.append(avg)
+        points = _build_front_projection(student_rows, unit="student", method=method)
+    else:
+        points = _build_front_projection(feature_rows, unit="event", method=method)
+
+    return {
+        "status": "success",
+        "data": {
+            "case_id": case_id,
+            "unit": unit,
+            "method": method,
+            "points": points[:5000],
+            "point_count": len(points),
+        },
+    }
+
+
+@app.get("/api/v2/vsumvis/ablation/sr")
+def get_vsumvis_ablation_sr():
+    ablations: List[Dict[str, Any]] = []
+    for d in _iter_vsumvis_dirs():
+        if _front_case_kind(d) != "sr_ablation":
+            continue
+        data = _read_sr_ablation_data(d)
+        if data:
+            ablations.append(data)
+    return {
+        "status": "success",
+        "ablations": ablations,
+        "total": len(ablations),
+    }
+
+
+@app.get("/api/v2/vsumvis/compare/sr")
+def get_vsumvis_compare_sr(
+    case_id: str = Query(...),
+    a: str = Query("A0_full_no_sr"),
+    b: str = Query("A8_adaptive_sliced_artifact_deblur_opencv"),
+):
+    case_dir = _find_front_case_dir(case_id)
+    if case_dir is None:
+        raise HTTPException(404, f"VSumVis case not found: {case_id}")
+
+    data = _read_sr_ablation_data(case_dir)
+    if data is None:
+        raise HTTPException(404, f"No SR ablation data for: {case_id}")
+
+    variant_a = None
+    variant_b = None
+    for v in data.get("variants", []):
+        vid = str(v.get("variant", "") or v.get("variant_id", ""))
+        if vid == a:
+            variant_a = v
+        if vid == b:
+            variant_b = v
+
+    if variant_a is None or variant_b is None:
+        raise HTTPException(404,
+            f"Variant not found. A={a} found={variant_a is not None}, B={b} found={variant_b is not None}")
+
+    delta = {}
+    for key in [
+        "person_f1", "behavior_macro_f1", "MOTA", "HOTA", "IDSW",
+        "tracked_students", "rear_pose_person_rows_proxy",
+        "stage_runtime_sec", "effective_fps", "avg_pose_conf",
+        "rear_avg_visible_keypoints", "track_gap_count_proxy",
+        "person_recall", "person_precision",
+    ]:
+        av = _safe_float(variant_a.get(key), 0.0)
+        bv = _safe_float(variant_b.get(key), 0.0)
+        delta[key] = {"A": av, "B": bv, "delta": round(bv - av, 4)}
+
+    sub_a_dir = case_dir / a
+    sub_b_dir = case_dir / b
+    assets_a: Dict[str, str] = {}
+    assets_b: Dict[str, str] = {}
+    for _name, sd, ad in [("A", sub_a_dir, assets_a), ("B", sub_b_dir, assets_b)]:
+        if sd.exists():
+            for ext in (".jpg", ".png", ".mp4"):
+                for f in sorted(sd.glob(f"*{ext}")):
+                    ad[f.name] = _front_url(f)
+
+    return {
+        "status": "success",
+        "data": {
+            "case_id": case_id,
+            "variant_a": {"label": a, "data": variant_a, "assets": assets_a},
+            "variant_b": {"label": b, "data": variant_b, "assets": assets_b},
+            "delta": delta,
+            "contact_sheet_url": data.get("contact_sheet_url"),
+            "compare_table_url": data.get("compare_table_url"),
+        },
+    }
+
+
+# ── COMPATIBILITY aliases (/api/v2/front/* → delegate) ───
+
+@app.get("/api/v2/front/cases")
+def get_front_cases():
+    return get_vsumvis_cases()
+
+
+@app.get("/api/v2/front/case/{case_id}")
+def get_front_case_detail(case_id: str):
+    return get_vsumvis_case_detail(case_id)
+
+
+@app.get("/api/v2/front/projection/{case_id}")
+def get_front_projection(
+    case_id: str,
+    unit: str = Query("event"),
+    method: str = Query("pca"),
+):
+    return get_vsumvis_projection(case_id, unit=unit, method=method)
+
+
+@app.get("/api/v2/front/ablation/sr")
+def get_front_ablation_sr():
+    return get_vsumvis_ablation_sr()
+
+
+@app.get("/api/v2/front/compare/sr")
+def get_front_compare_sr(
+    case_id: str = Query(...),
+    a: str = Query("A0_full_no_sr"),
+    b: str = Query("A8_adaptive_sliced_artifact_deblur_opencv"),
+):
+    return get_vsumvis_compare_sr(case_id, a=a, b=b)
+
+
+@app.get("/paper/front-vsumvis", response_class=HTMLResponse)
+async def front_vsumvis_page(request: Request):
+    """VSumVis-style classroom behavior visual analysis dashboard."""
+    tpl = TEMPLATE_DIR / "front_vsumvis.html"
+    if tpl.exists():
+        return templates.TemplateResponse("front_vsumvis.html", {"request": request})
+    raise HTTPException(404, "front_vsumvis.html template not found")
+
+
+# =========================================================
+# 10) Mount frontend bundles as static and start
 # =========================================================
 
 if BUNDLE_DIR.exists():

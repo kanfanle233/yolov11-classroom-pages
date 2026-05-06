@@ -24,6 +24,17 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 # Avoid loky probing warnings/errors in restricted Windows environments.
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 
+from server.evidence_schema import (
+    CANONICAL_EVENT_ID, CANONICAL_QUERY_TEXT, CANONICAL_QUERY_SOURCE,
+    CANONICAL_QUERY_TIME, CANONICAL_WINDOW_START, CANONICAL_WINDOW_END,
+    CANONICAL_TRACK_ID, CANONICAL_LABEL, CANONICAL_P_MATCH, CANONICAL_P_MISMATCH,
+    CANONICAL_RELIABILITY, CANONICAL_UNCERTAINTY,
+    CANONICAL_VISUAL_SCORE, CANONICAL_TEXT_SCORE, CANONICAL_UQ_SCORE,
+    CANONICAL_OVERLAP, CANONICAL_ACTION_CONFIDENCE,
+    normalize_verified_event, normalize_event_query, normalize_align_candidate,
+    _pick as _schema_pick, _safe_float as _schema_safe_float, _safe_int as _schema_safe_int,
+)
+
 # 灏濊瘯瀵煎叆 Levenshtein锛屽鏋滄病鏈夊氨鐢ㄧ畝鍖栫増
 try:
     import Levenshtein  # type: ignore
@@ -76,6 +87,8 @@ PAPER_MAINLINE_ALIASES = {
     "paper_package_20260426",
     "run_full_paper_mainline_001",
 }
+LLM_JUDGE_PIPELINE_DIR = (OUTPUT_DIR / "llm_judge_pipeline").resolve()
+STUDENT_FUSION_MODES = {"llm_distilled_student_v4", "llm_distilled_student"}
 
 # =========================================================
 # Video search configuration (for browser-compatible playback)
@@ -918,6 +931,71 @@ def _read_json_file(path: Path, default: Any) -> Any:
             return default
 
 
+def _student_model_display_name(path_text: Any) -> str:
+    text = str(path_text or "").strip()
+    return Path(text).name if text else ""
+
+
+def _student_distillation_from_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(evidence, dict):
+        evidence = {}
+    fusion_mode = str(evidence.get("fusion_mode") or "unknown")
+    teacher_source = str(evidence.get("teacher_source") or "")
+    teacher_dataset = str(evidence.get("teacher_dataset") or "")
+    student_model_name = _student_model_display_name(evidence.get("student_model_path"))
+    enabled = (
+        fusion_mode in STUDENT_FUSION_MODES
+        or bool(teacher_source)
+        or bool(teacher_dataset)
+        or bool(student_model_name)
+    )
+    return {
+        "enabled": bool(enabled),
+        "fusion_mode": fusion_mode,
+        "student_model_name": student_model_name,
+        "student_feature_version": str(evidence.get("student_feature_version") or ""),
+        "teacher_source": teacher_source,
+        "teacher_dataset": teacher_dataset,
+        "evaluation_kind": "pseudo_label_benchmark" if enabled else "",
+        "silver_gold_boundary": "silver_labels_not_human_gold" if enabled else "",
+    }
+
+
+def _read_llm_student_v4_status() -> Dict[str, Any]:
+    report_path = LLM_JUDGE_PIPELINE_DIR / "metrics" / "training_report_v4.json"
+    checks_path = LLM_JUDGE_PIPELINE_DIR / "reports" / "anti_drift_checks_v4.json"
+    report = _read_json_file(report_path, {})
+    checks = _read_json_file(checks_path, {})
+    if not isinstance(report, dict) or not report:
+        return {"available": False}
+
+    best_model = str(report.get("best_model") or "")
+    test_metrics: Dict[str, Any] = {}
+    results = report.get("results")
+    if isinstance(results, dict) and best_model:
+        candidate = results.get(f"{best_model}_test")
+        if isinstance(candidate, dict):
+            test_metrics = candidate
+
+    data = report.get("data") if isinstance(report.get("data"), dict) else {}
+    return {
+        "available": True,
+        "fusion_mode": "llm_distilled_student_v4",
+        "teacher_source": str(report.get("teacher_source") or "claude_agent"),
+        "teacher_dataset": str(report.get("teacher_dataset") or "llm_adjudicated_dataset_v4"),
+        "student_model_name": "student_judge_v4_best.joblib",
+        "sample_count": int(_safe_float(data.get("total_samples"), 0)),
+        "label_distribution": data.get("label_distribution", {}),
+        "best_model": best_model,
+        "test_macro_f1": _safe_float(test_metrics.get("f1_macro"), 0.0),
+        "test_balanced_accuracy": _safe_float(test_metrics.get("balanced_accuracy"), 0.0),
+        "teacher_student_agreement": _safe_float(test_metrics.get("teacher_student_agreement"), 0.0),
+        "evaluation_kind": str(report.get("evaluation_kind") or "pseudo_label_benchmark"),
+        "anti_drift_passed": bool(checks.get("all_checks_passed")) if isinstance(checks, dict) else False,
+        "silver_gold_boundary": "silver_labels_not_human_gold",
+    }
+
+
 def _read_csv_rows(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
@@ -943,7 +1021,7 @@ def _to_docs_url(path: Path) -> Optional[str]:
     return f"/docs/{rel.as_posix()}"
 
 
-def _load_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
+def _load_jsonl_rows(path: Path, strict: bool = False) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     if not path.exists():
         return rows
@@ -955,10 +1033,310 @@ def _load_jsonl_rows(path: Path) -> List[Dict[str, Any]]:
             try:
                 obj = json.loads(line)
             except Exception:
+                if strict:
+                    raise
                 continue
             if isinstance(obj, dict):
                 rows.append(obj)
     return rows
+
+
+# ── Strict-mode readers (track parse errors instead of swallowing) ─
+
+def _load_jsonl_rows_strict(path: Path) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Read JSONL, returning (rows, parse_errors)."""
+    rows: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    if not path.exists():
+        return rows, errors
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception as e:
+                errors.append({"line": line_no, "error": str(e), "preview": line[:120]})
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows, errors
+
+
+def _read_json_file_strict(path: Path) -> Tuple[Any, List[Dict[str, Any]]]:
+    """Read JSON file, returning (data, parse_errors)."""
+    errors: List[Dict[str, Any]] = []
+    if not path.exists():
+        return None, errors
+    for enc in ("utf-8", "utf-8-sig"):
+        try:
+            return json.loads(path.read_text(encoding=enc)), errors
+        except json.JSONDecodeError as e:
+            errors.append({"file": str(path), "encoding": enc, "error": str(e)})
+        except Exception:
+            continue
+    return None, errors
+
+
+# ── Unified case context resolution ───────────────────────────────
+
+def _resolve_case_context(case_id: str) -> Optional[Dict[str, Any]]:
+    """Resolve a case_id to its context: case_dir, bundle_dir, source_case_dir, data_source.
+
+    Returns None if the case cannot be found.
+    """
+    case_dir = _find_front_case_dir(case_id)
+    if case_dir is None:
+        # Try legacy resolution
+        case_dir = _find_case_dir(case_id)
+    if case_dir is None:
+        return None
+
+    data_source = _vsumvis_data_source(case_dir)
+    bundle_dir: Optional[Path] = None
+    source_case_dir: Optional[Path] = None
+
+    if data_source == "frontend_bundle":
+        bundle_dir = case_dir
+        manifest_path = case_dir / "frontend_data_manifest.json"
+        manifest = _read_json_file(manifest_path, {})
+        if isinstance(manifest, dict):
+            src = manifest.get("source_case_dir", "")
+            if src:
+                p = Path(src)
+                if p.exists():
+                    source_case_dir = p
+    else:
+        source_case_dir = case_dir
+        # Check if a corresponding bundle exists
+        bundle_candidate = BUNDLE_DIR / (case_id.replace("_full", "_sliced"))
+        if not bundle_candidate.exists():
+            bundle_candidate = BUNDLE_DIR / case_id
+        if bundle_candidate.exists() and (bundle_candidate / "frontend_data_manifest.json").exists():
+            bundle_dir = bundle_candidate
+
+    available_files: Dict[str, bool] = {}
+    search_dir = source_case_dir if source_case_dir else case_dir
+    for fname in ("verified_events.jsonl", "verified_events.json",
+                  "event_queries.fusion_v2.jsonl", "event_queries.jsonl", "event_queries.json",
+                  "align_multimodal.json",
+                  "asr_quality_report.json",
+                  "timeline_chart.json", "timeline_students.csv",
+                  "pipeline_contract_v2_report.json",
+                  "transcript.jsonl"):
+        available_files[fname] = (search_dir / fname).exists()
+
+    return {
+        "case_id": case_id,
+        "case_dir": str(case_dir),
+        "bundle_dir": str(bundle_dir) if bundle_dir else None,
+        "source_case_dir": str(source_case_dir) if source_case_dir else None,
+        "data_source": data_source,
+        "available_files": available_files,
+    }
+
+
+# ── Alignment & ASR readers (work from context) ────────────────────
+
+@lru_cache(maxsize=128)
+def _read_alignments_from_dir(search_dir: Path) -> List[Dict[str, Any]]:
+    """Cached read of align_multimodal.json from a single directory."""
+    path = search_dir / "align_multimodal.json"
+    if not path.exists():
+        return []
+    data = _read_json_file(path, None)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("events", "items", "alignments"):
+            if isinstance(data.get(key), list):
+                return data[key]
+    return []
+
+
+def _read_alignments_any(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Read align_multimodal.json from source_case_dir or case_dir."""
+    search_dirs: List[Path] = [Path(ctx["case_dir"])]
+    if ctx.get("source_case_dir"):
+        src_dir = Path(ctx["source_case_dir"])
+        if src_dir not in search_dirs:
+            search_dirs.append(src_dir)
+    for search_dir in search_dirs:
+        result = _read_alignments_from_dir(search_dir)
+        if result:
+            return result
+    return []
+
+
+@lru_cache(maxsize=128)
+def _read_asr_from_dir(search_dir: Path) -> Optional[Dict[str, Any]]:
+    """Cached read of asr_quality_report.json from a single directory."""
+    path = search_dir / "asr_quality_report.json"
+    if path.exists():
+        data = _read_json_file(path, None)
+        if isinstance(data, dict):
+            return data
+    bundle_path = search_dir / "asr_quality.json"
+    if bundle_path.exists():
+        data = _read_json_file(bundle_path, None)
+        if isinstance(data, dict):
+            report = data.get("report")
+            if isinstance(report, dict):
+                return report
+            return data
+    return None
+
+
+def _read_asr_quality_any(ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Read asr_quality_report.json from source_case_dir or case_dir."""
+    search_dirs: List[Path] = [Path(ctx["case_dir"])]
+    if ctx.get("source_case_dir"):
+        src_dir = Path(ctx["source_case_dir"])
+        if src_dir not in search_dirs:
+            search_dirs.append(src_dir)
+    for search_dir in search_dirs:
+        result = _read_asr_from_dir(search_dir)
+        if result is not None:
+            return result
+    return None
+
+
+def _event_id_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"(\d{6})", text)
+    if match:
+        return match.group(1)
+    return text
+
+
+def _event_id_matches(left: Any, right: Any) -> bool:
+    left_text = str(left or "").strip()
+    right_text = str(right or "").strip()
+    if not left_text or not right_text:
+        return False
+    if left_text == right_text:
+        return True
+    left_key = _event_id_key(left_text)
+    right_key = _event_id_key(right_text)
+    return bool(left_key) and left_key == right_key
+
+
+def _compute_selected_candidate_rank(
+    event_id: str, selected_track_id: int, alignments: List[Dict[str, Any]],
+) -> Tuple[int, int, str, str]:
+    """Find which rank (1-based) the selected track_id occupies in the alignment candidates.
+
+    Returns (selected_candidate_rank, candidate_count, rank_metric, selected_by).
+    - rank_metric: description of the ranking method used (e.g. "overlap*0.65+action_confidence*0.35")
+    - selected_by: "track_id_match" to clarify this is a post-hoc lookup, not the verifier's
+      actual decision function. Prevents explanation conflicts with verifier internals.
+    """
+    rank_metric = "overlap*0.65+action_confidence*0.35"
+    for rec in alignments:
+        eid = str(rec.get("event_id") or rec.get("query_id") or "")
+        if not _event_id_matches(eid, event_id):
+            continue
+        candidates = rec.get("candidates", [])
+        if not isinstance(candidates, list):
+            continue
+        scored = []
+        for c in candidates:
+            ov = _safe_float(c.get("overlap", 0), 0.0)
+            ac = _safe_float(c.get("action_confidence", 0), 0.0)
+            score = ov * 0.65 + ac * 0.35
+            scored.append((score, c))
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        for rank, (_, c) in enumerate(scored, 1):
+            tid = int(_safe_float(c.get("track_id", -1), -1.0))
+            if tid == selected_track_id:
+                return rank, len(scored), rank_metric, "track_id_match"
+        return 0, len(scored), rank_metric, "track_id_match"
+    return 0, 0, rank_metric, "track_id_match"
+
+
+# ── ASR quality / query source inference ──────────────────────────
+
+def _infer_query_source(
+    event_queries: List[Dict[str, Any]],
+    verified_events: List[Dict[str, Any]],
+    asr_report: Optional[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Build a per-event lookup of query_source, is_visual_fallback, and source_conflict.
+
+    Dual-source resolution:
+    - Primary: event_queries.fusion_v2.jsonl `source` field (authoritative per-event)
+    - Secondary: asr_quality_report.json global status (inferred fallback signal)
+    - When primary and secondary disagree, source_conflict=true is set and the
+      primary source is kept. We never silently override the pipeline's own
+      source annotation.
+    """
+    result: Dict[str, Dict[str, Any]] = {}
+
+    # Build lookup from event_queries
+    eq_source: Dict[str, str] = {}
+    for eq in event_queries:
+        eid = str(eq.get("event_id") or eq.get("query_id") or "")
+        if eid:
+            src = str(eq.get("source", "")).lower()
+            eq_source[eid] = src if src in ("asr", "visual_fallback") else "unknown"
+
+    # Infer ASR-based source from report (secondary)
+    asr_inferred = "unknown"
+    if asr_report and isinstance(asr_report, dict):
+        status = str(asr_report.get("status", "")).lower()
+        segments_accepted = int(asr_report.get("segments_accepted", -1))
+        if status == "placeholder" or segments_accepted == 0:
+            asr_inferred = "visual_fallback"
+        elif status == "ok" or segments_accepted > 0:
+            asr_inferred = "asr"
+
+    for ve in verified_events:
+        eid = str(ve.get("event_id") or ve.get("query_id") or "")
+        if not eid:
+            continue
+        ve_source = str(ve.get("query_source") or ve.get("source") or "").lower()
+        eq_src = eq_source.get(eid, "")
+
+        # Resolve primary source: eq.source > ve.source > asr_inferred
+        if eq_src in ("asr", "visual_fallback"):
+            primary = eq_src
+            primary_from = "event_query"
+        elif ve_source in ("asr", "visual_fallback"):
+            primary = ve_source
+            primary_from = "verified_event"
+        elif asr_inferred != "unknown":
+            primary = asr_inferred
+            primary_from = "asr_report"
+        else:
+            primary = "asr"
+            primary_from = "default"
+
+        # Detect conflict: primary disagrees with ASR inferred (when both are known)
+        source_conflict = False
+        conflict_detail = None
+        if asr_inferred != "unknown" and primary_from != "asr_report":
+            if primary == "asr" and asr_inferred == "visual_fallback":
+                source_conflict = True
+                conflict_detail = "event_query says asr but ASR report status suggests visual_fallback"
+            elif primary == "visual_fallback" and asr_inferred == "asr":
+                source_conflict = True
+                conflict_detail = "event_query says visual_fallback but ASR report has valid segments"
+
+        is_fb = (primary == "visual_fallback")
+        result[eid] = {
+            "query_source": primary,
+            "is_visual_fallback": is_fb,
+            "source_conflict": source_conflict,
+            "asr_inferred_source": asr_inferred,
+        }
+        if conflict_detail:
+            result[eid]["conflict_detail"] = conflict_detail
+
+    return result
 
 
 def _timeline_from_verified_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1926,6 +2304,14 @@ def get_media(video_id: str):
     original_url = f"/api/media/{video_id}/original" if original_path and original_path.exists() else None
     browser_original_url = _path_to_public_url(_ensure_browser_friendly_video(original_path))
 
+    pose_demo_path = None
+    for candidate_name in ("pose_demo_yolo11x.mp4", "pose_demo_out.mp4"):
+        candidate = case_dir / candidate_name
+        if candidate.exists():
+            pose_demo_path = candidate
+            break
+    browser_pose_demo_path = _ensure_browser_friendly_video(pose_demo_path)
+
     def _u(name: str) -> Optional[str]:
         return _path_to_public_url(case_dir / name)
 
@@ -1937,7 +2323,8 @@ def get_media(video_id: str):
         "browser_original": browser_original_url,
         "overlay": overlay_url,
         "browser_overlay": browser_overlay_url,
-        "pose_demo": _u("pose_demo_out.mp4"),
+        "pose_demo": _path_to_public_url(browser_pose_demo_path or pose_demo_path) or _u("pose_demo_out.mp4"),
+        "browser_pose_demo": _path_to_public_url(browser_pose_demo_path),
         "objects_demo": _u("objects_demo_out.mp4"),
         "timeline_png": _u("timeline_chart.png"),
         "projection_json": _u("student_projection.json"),
@@ -2485,6 +2872,7 @@ def _bff_action_id(row: Dict[str, Any], behavior: str) -> int:
 @app.get("/api/v1/visualization/case_data")
 async def get_visualization_case_data(
     case_id: str = Query(..., description="Case id, for example front_45618_sliced"),
+    strict: bool = Query(False, description="Surface parse errors as warnings instead of swallowing them"),
 ):
     """
     BFF aggregation endpoint for the D3 frontend.
@@ -2829,10 +3217,10 @@ def _iter_vsumvis_dirs() -> List[Path]:
         if _is_vsumvis_case_dir(candidate):
             out.append(candidate)
 
-    # Deduplicate by directory name: keep the richest copy.
+    # Deduplicate by public case id: keep the richest copy.
     by_name: Dict[str, List[Path]] = {}
     for p in out:
-        by_name.setdefault(p.name, []).append(p)
+        by_name.setdefault(_public_case_id(p), []).append(p)
     deduped: List[Path] = []
     for paths in by_name.values():
         if len(paths) == 1:
@@ -2850,11 +3238,31 @@ def _iter_front_dirs() -> List[Path]:
     return _iter_vsumvis_dirs()
 
 
+def _public_case_id(case_dir: Path) -> str:
+    try:
+        if case_dir.resolve() == PAPER_MAINLINE_OUTPUT_DIR.resolve():
+            return "run_full_paper_mainline_001"
+    except Exception:
+        pass
+    if case_dir.parent.name in PAPER_MAINLINE_ALIASES:
+        return "run_full_paper_mainline_001"
+    manifest_path = case_dir / "frontend_data_manifest.json"
+    if manifest_path.exists():
+        manifest = _read_json_file(manifest_path, {})
+        if isinstance(manifest, dict):
+            manifest_case_id = str(manifest.get("case_id") or "").strip()
+            if manifest_case_id:
+                return manifest_case_id
+    return case_dir.name
+
+
 def _find_front_case_dir(case_id: str) -> Optional[Path]:
     if not VALID_CASE_ID_RE.fullmatch(case_id):
         return None
+    if case_id in PAPER_MAINLINE_ALIASES and PAPER_MAINLINE_OUTPUT_DIR.exists():
+        return PAPER_MAINLINE_OUTPUT_DIR
     for child in _iter_vsumvis_dirs():
-        if child.name == case_id:
+        if child.name == case_id or _public_case_id(child) == case_id:
             return child
     return None
 
@@ -2903,9 +3311,13 @@ def _vsumvis_case_sort_key(case_dir: Path) -> Tuple[int, int, int, int, int, str
 
 
 def _front_case_kind(case_dir: Path) -> str:
-    name = case_dir.name.lower()
+    name = _public_case_id(case_dir).lower()
     if "sr_ablation" in name:
         return "sr_ablation"
+    if "_sliced" in case_dir.name.lower() or "_sliced" in name or _vsumvis_data_source(case_dir) == "frontend_bundle":
+        return "sliced"
+    if case_dir.parent.name in PAPER_MAINLINE_ALIASES or name in PAPER_MAINLINE_ALIASES:
+        return "paper_mainline"
     return "full"
 
 
@@ -3209,6 +3621,7 @@ def _normalize_timeline_segments(raw_items: List[Dict[str, Any]]) -> List[Dict[s
     return out
 
 
+@lru_cache(maxsize=128)
 def _read_verified_events_front(case_dir: Path) -> List[Dict[str, Any]]:
     """Read verified_events.jsonl with normalized fields."""
     path = case_dir / "verified_events.jsonl"
@@ -3226,11 +3639,16 @@ def _read_verified_events_front(case_dir: Path) -> List[Dict[str, Any]]:
     for row in rows:
         ws, we = _event_window(row)
         q_time = _safe_float(row.get("query_time") or row.get("timestamp") or row.get("t_center"), (ws + we) / 2)
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        raw_source = str(row.get("query_source") or row.get("source") or "")
+        is_fallback = (raw_source.lower() == "visual_fallback")
         entry = {
             "event_id": str(row.get("event_id") or row.get("query_id") or ""),
             "query_id": str(row.get("query_id") or row.get("event_id") or ""),
             "track_id": int(_safe_float(row.get("track_id"), -1)),
             "query_text": str(row.get("query_text") or ""),
+            "query_source": raw_source if raw_source else "unknown",
+            "is_visual_fallback": is_fallback,
             "window_start": round(ws, 4),
             "window_end": round(we, 4),
             "query_time": round(q_time, 4),
@@ -3239,16 +3657,18 @@ def _read_verified_events_front(case_dir: Path) -> List[Dict[str, Any]]:
             "reliability_score": _safe_float(row.get("reliability_score") or row.get("reliability"), 0.0),
             "uncertainty": _safe_float(row.get("uncertainty"), 0.0),
             "match_label": str(row.get("match_label") or row.get("label") or "unverified"),
+            "label": str(row.get("label") or row.get("match_label") or "unverified"),
             "action": str(row.get("action") or row.get("semantic_id") or ""),
             "semantic_id": str(row.get("semantic_id") or ""),
             "semantic_label_zh": str(row.get("semantic_label_zh") or ""),
             "semantic_label_en": str(row.get("semantic_label_en") or ""),
-            "evidence": row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
+            "evidence": evidence,
         }
         out.append(entry)
     return out
 
 
+@lru_cache(maxsize=128)
 def _read_event_queries_front(case_dir: Path) -> List[Dict[str, Any]]:
     path = case_dir / "event_queries.fusion_v2.jsonl"
     if not path.exists():
@@ -3261,10 +3681,13 @@ def _read_event_queries_front(case_dir: Path) -> List[Dict[str, Any]]:
             if rows:
                 out: List[Dict[str, Any]] = []
                 for row in rows:
+                    src = str(row.get("source", ""))
                     out.append({
                         "event_id": str(row.get("event_id") or row.get("query_id") or ""),
                         "query_id": str(row.get("query_id") or row.get("event_id") or ""),
                         "query_text": str(row.get("query_text") or ""),
+                        "query_source": src if src else "unknown",
+                        "is_visual_fallback": (src.lower() == "visual_fallback"),
                         "t_center": _safe_float(row.get("t_center") or row.get("timestamp"), 0.0),
                         "start": _safe_float(row.get("start"), 0.0),
                         "end": _safe_float(row.get("end"), 0.0),
@@ -3272,15 +3695,34 @@ def _read_event_queries_front(case_dir: Path) -> List[Dict[str, Any]]:
                         "event_type": str(row.get("event_type") or ""),
                     })
                 return out
+
+    # If file not found locally and this is a bundle dir, try source_case_dir
+    if not path.exists():
+        manifest_path = case_dir / "frontend_data_manifest.json"
+        manifest = _read_json_file(manifest_path, {})
+        src_dir = manifest.get("source_case_dir", "") if isinstance(manifest, dict) else ""
+        if src_dir:
+            src_path = Path(src_dir)
+            alt_path = src_path / "event_queries.fusion_v2.jsonl"
+            if alt_path.exists():
+                path = alt_path
+            else:
+                alt_path = src_path / "event_queries.jsonl"
+                if alt_path.exists():
+                    path = alt_path
+
     if not path.exists():
         return []
     rows = _load_jsonl_rows(path)
     out: List[Dict[str, Any]] = []
     for row in rows:
+        src = str(row.get("source", ""))
         out.append({
             "event_id": str(row.get("event_id") or row.get("query_id") or ""),
             "query_id": str(row.get("query_id") or row.get("event_id") or ""),
             "query_text": str(row.get("query_text") or ""),
+            "query_source": src if src else "unknown",
+            "is_visual_fallback": (src.lower() == "visual_fallback"),
             "t_center": _safe_float(row.get("t_center") or row.get("timestamp"), 0.0),
             "start": _safe_float(row.get("start"), 0.0),
             "end": _safe_float(row.get("end"), 0.0),
@@ -3382,6 +3824,8 @@ def _build_front_feature_rows(
             "p_mismatch": round(p_mismatch_val, 4),
             "action_confidence": round(action_conf, 4),
             "verification_status": match_label,
+            "query_source": str(ve.get("query_source", "unknown")) if ve else "unknown",
+            "is_visual_fallback": bool(ve.get("is_visual_fallback", False)) if ve else False,
             "overlap": 0.0,
             "behavior_match_score": 0.0,
             "pose_conf": 0.0,
@@ -3601,7 +4045,7 @@ def _read_sr_ablation_data(case_dir: Path) -> Optional[Dict[str, Any]]:
 # ── Shared VSumVis helpers ───────────────────────────────
 
 def _build_vsumvis_case_entry(case_dir: Path) -> Dict[str, Any]:
-    case_id = case_dir.name
+    case_id = _public_case_id(case_dir)
     kind = _front_case_kind(case_dir)
     video_stem = _front_video_stem(case_dir)
     file_status = _front_file_status(case_dir)
@@ -3708,6 +4152,526 @@ def _build_vsumvis_case_detail(case_dir: Path, case_id: str) -> Dict[str, Any]:
     }
 
 
+# ── Canonical case APIs (/api/cases, /api/case/*) ──────────────
+
+@app.get("/api/cases")
+def get_canonical_cases():
+    """Unified case listing across raw outputs, codex reports, and bundles."""
+    cases_by_id: Dict[str, Dict[str, Any]] = {}
+    for d in _iter_vsumvis_dirs():
+        entry = _build_vsumvis_case_entry(d)
+        ctx = _resolve_case_context(entry.get("case_id", d.name))
+        entry["data_source"] = ctx.get("data_source", "unknown") if ctx else "unknown"
+        entry["case_kind"] = _front_case_kind(d)
+        current = cases_by_id.get(entry["case_id"])
+        if current is None or _case_dir_quality(d) > _case_dir_quality(Path(current["_dir"])):
+            entry["_dir"] = str(d)
+            cases_by_id[entry["case_id"]] = entry
+    cases = sorted(cases_by_id.values(), key=lambda c: (str(c.get("case_kind", "")), str(c.get("case_id", ""))))
+    for case in cases:
+        case.pop("_dir", None)
+    return {"status": "success", "cases": cases, "total": len(cases)}
+
+
+@app.get("/api/case/{case_id}/summary")
+def get_case_summary(case_id: str):
+    """Aggregated case summary: counts, label distribution, ASR status, contract."""
+    ctx = _resolve_case_context(case_id)
+    if ctx is None:
+        raise HTTPException(404, f"Case not found: {case_id}")
+
+    search_dir = Path(ctx["source_case_dir"] or ctx["case_dir"])
+    case_dir = Path(ctx["case_dir"])
+
+    # Read verified events for label distribution
+    verified = _read_verified_events_front(case_dir)
+
+    # If bundle with empty verified, try source
+    if not verified and ctx.get("source_case_dir"):
+        verified = _read_verified_events_front(Path(ctx["source_case_dir"]))
+
+    label_dist: Dict[str, int] = {"match": 0, "uncertain": 0, "mismatch": 0, "unverified": 0}
+    for ve in verified:
+        lbl = str(ve.get("match_label") or ve.get("label") or "unverified")
+        label_dist[lbl] = label_dist.get(lbl, 0) + 1
+
+    # ASR status
+    asr_report = _read_asr_quality_any(ctx)
+    asr_status = "unknown"
+    asr_accepted = 0
+    asr_raw = 0
+    if asr_report and isinstance(asr_report, dict):
+        asr_status = str(asr_report.get("status", "unknown"))
+        asr_accepted = int(asr_report.get("segments_accepted", 0))
+        asr_raw = int(asr_report.get("segments_raw", 0))
+
+    # Contract status
+    contract_status = _front_contract_status(case_dir)
+    student_count = _front_count_students(case_dir)
+    duration = _front_duration_sec(case_dir)
+
+    # Query count
+    queries = _read_event_queries_front(case_dir)
+    if not queries and ctx.get("source_case_dir"):
+        queries = _read_event_queries_front(Path(ctx["source_case_dir"]))
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "data_source": ctx["data_source"],
+        "case_kind": _front_case_kind(case_dir),
+        "student_count": student_count,
+        "duration_sec": duration,
+        "verified_event_count": len(verified),
+        "query_event_count": len(queries),
+        "label_distribution": label_dist,
+        "asr_status": asr_status,
+        "asr_segments_accepted": asr_accepted,
+        "asr_segments_raw": asr_raw,
+        "contract_status": contract_status,
+        "llm_distilled_student_v4": _read_llm_student_v4_status(),
+        "available_files": ctx["available_files"],
+    }
+
+
+@app.get("/api/case/{case_id}/contract")
+def get_case_contract(case_id: str):
+    """Detailed contract report: missing files, error counts, warnings."""
+    ctx = _resolve_case_context(case_id)
+    if ctx is None:
+        raise HTTPException(404, f"Case not found: {case_id}")
+
+    search_dir = Path(ctx["source_case_dir"] or ctx["case_dir"])
+    contract_path = search_dir / "pipeline_contract_v2_report.json"
+    fusion_path = search_dir / "fusion_contract_report.json"
+
+    contract = _read_json_file(contract_path, None)
+    fusion = _read_json_file(fusion_path, None)
+
+    missing_files: List[str] = []
+    error_count = 0
+    warning_count = 0
+
+    if isinstance(contract, dict):
+        checks = contract.get("checks") or contract.get("results") or []
+        if isinstance(checks, list):
+            for c in checks:
+                if isinstance(c, dict):
+                    if not c.get("passed", True):
+                        missing_files.append(str(c.get("file", c.get("name", "unknown"))))
+                        error_count += 1
+        # Also check files dict
+        files = contract.get("files", {})
+        if isinstance(files, dict):
+            for fname, finfo in files.items():
+                if isinstance(finfo, dict):
+                    if not finfo.get("exists", True):
+                        missing_files.append(fname)
+                        error_count += 1
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "contract": contract,
+        "fusion_contract": fusion,
+        "missing_files": missing_files,
+        "error_count": error_count,
+        "warning_count": warning_count,
+    }
+
+
+@app.get("/api/case/{case_id}/asr-quality")
+def get_case_asr_quality(case_id: str):
+    """ASR quality report for a case: status, segment counts, thresholds, audio energy."""
+    ctx = _resolve_case_context(case_id)
+    if ctx is None:
+        raise HTTPException(404, f"Case not found: {case_id}")
+
+    asr_report = _read_asr_quality_any(ctx)
+    if asr_report is None:
+        return {
+            "status": "success",
+            "case_id": case_id,
+            "asr_report": None,
+            "asr_available": False,
+            "message": "No asr_quality_report.json found for this case.",
+        }
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "asr_available": True,
+        "asr_status": str(asr_report.get("status", "unknown")),
+        "model": str(asr_report.get("model", "")),
+        "device": str(asr_report.get("device", "")),
+        "language": str(asr_report.get("info", {}).get("language", "")),
+        "duration": float(asr_report.get("info", {}).get("duration", 0)),
+        "segments_raw": int(asr_report.get("segments_raw", 0)),
+        "segments_good": int(asr_report.get("segments_good", 0)),
+        "segments_accepted": int(asr_report.get("segments_accepted", 0)),
+        "segments_rejected": int(asr_report.get("segments_rejected", 0)),
+        "thresholds": asr_report.get("thresholds", {}),
+        "audio_energy": asr_report.get("audio_energy", {}),
+        "is_placeholder": str(asr_report.get("status", "")).lower() == "placeholder",
+    }
+
+
+# ── Evidence API (single-event) ──────────────────────────────────
+
+@app.get("/api/case/{case_id}/evidence/{event_id}")
+def get_event_evidence(case_id: str, event_id: str):
+    """Return a complete evidence object for a single event.
+
+    Joins: event_query + alignment candidates + verified event + timeline + media URLs.
+    """
+    ctx = _resolve_case_context(case_id)
+    if ctx is None:
+        raise HTTPException(404, f"Case not found: {case_id}")
+
+    case_dir = Path(ctx["case_dir"])
+    search_dir = Path(ctx["source_case_dir"] or ctx["case_dir"])
+
+    # Read all data sources
+    queries = _read_event_queries_front(case_dir)
+    if not queries and ctx.get("source_case_dir"):
+        queries = _read_event_queries_front(search_dir)
+
+    verified = _read_verified_events_front(case_dir)
+    if not verified and ctx.get("source_case_dir"):
+        verified = _read_verified_events_front(search_dir)
+
+    alignments = _read_alignments_any(ctx)
+    asr_report = _read_asr_quality_any(ctx)
+
+    # Infer query source for all events
+    source_map = _infer_query_source(queries, verified, asr_report)
+
+    # Find the target event
+    query = None
+    for q in queries:
+        qid = str(q.get("event_id") or q.get("query_id") or "")
+        if _event_id_matches(qid, event_id):
+            query = q
+            break
+
+    ve = None
+    for v in verified:
+        vid = str(v.get("event_id") or v.get("query_id") or "")
+        if _event_id_matches(vid, event_id):
+            ve = v
+            break
+
+    if query is None and ve is None:
+        return {
+            "status": "event_not_found",
+            "case_id": case_id,
+            "event_id": event_id,
+            "message": f"No query or verified event found for event_id={event_id} in case {case_id}.",
+            "query": None,
+            "selected": None,
+            "align_candidates": [],
+            "media": None,
+            "source_files": {},
+        }
+
+    # Build query block
+    q_row = query if isinstance(query, dict) else {}
+    ve_row = ve if isinstance(ve, dict) else {}
+    matched_event_id = str(
+        (q_row.get("event_id") or q_row.get("query_id") or "")
+        if q_row else (ve_row.get("event_id") or ve_row.get("query_id") or "")
+    )
+    src_info = source_map.get(matched_event_id or event_id, {
+        "query_source": "unknown", "is_visual_fallback": False,
+        "source_conflict": False, "asr_inferred_source": "unknown",
+    })
+    ve_window = ve_row.get("window") if isinstance(ve_row.get("window"), dict) else {}
+    query_block: Dict[str, Any] = {
+        "event_id": matched_event_id or event_id,
+        "query_text": str(_first_value(q_row.get("query_text"), ve_row.get("query_text"), default="")),
+        "query_source": src_info["query_source"],
+        "is_visual_fallback": src_info["is_visual_fallback"],
+        "source_conflict": src_info.get("source_conflict", False),
+        "asr_inferred_source": src_info.get("asr_inferred_source", "unknown"),
+        "query_time": _safe_float(_first_value(
+            q_row.get("t_center"), q_row.get("timestamp"), q_row.get("query_time"),
+            ve_row.get("query_time"), ve_row.get("timestamp"), ve_row.get("t_center"),
+            default=0,
+        ), 0.0),
+        "window_start": _safe_float(_first_value(
+            q_row.get("start"), q_row.get("window_start"),
+            ve_window.get("start"), ve_row.get("window_start"),
+            default=0,
+        ), 0.0),
+        "window_end": _safe_float(_first_value(
+            q_row.get("end"), q_row.get("window_end"),
+            ve_window.get("end"), ve_row.get("window_end"),
+            default=0,
+        ), 0.0),
+        "confidence": _safe_float(q_row.get("confidence", 0), 0.0),
+        "event_type": str(_first_value(q_row.get("event_type"), ve_row.get("event_type"), default="")),
+    }
+    if src_info.get("conflict_detail"):
+        query_block["conflict_detail"] = src_info["conflict_detail"]
+
+    # Build selected block
+    selected_track_id = int(_safe_float(ve_row.get("track_id", -1), -1.0)) if ve_row else -1
+    selected_rank, candidate_count, rank_metric, selected_by = _compute_selected_candidate_rank(matched_event_id or event_id, selected_track_id, alignments)
+    selected_evidence = ve_row.get("evidence") if isinstance(ve_row.get("evidence"), dict) else {}
+    fusion_mode = str(selected_evidence.get("fusion_mode") or "unknown")
+    distillation = _student_distillation_from_evidence(selected_evidence)
+
+    selected_block: Dict[str, Any] = {
+        "track_id": selected_track_id,
+        "student_id": ve_row.get("student_id", f"S{selected_track_id:02d}") if ve_row else "",
+        "label": str(ve_row.get("match_label") or ve_row.get("label") or "unverified") if ve_row else "unverified",
+        "p_match": _safe_float(ve_row.get("p_match", 0), 0.0) if ve_row else 0,
+        "p_mismatch": _safe_float(ve_row.get("p_mismatch", 0), 0.0) if ve_row else 0,
+        "reliability_score": _safe_float(ve_row.get("reliability_score", 0), 0.0) if ve_row else 0,
+        "uncertainty": _safe_float(ve_row.get("uncertainty", 0), 0.0) if ve_row else 0,
+        "visual_score": _safe_float(selected_evidence.get("visual_score", 0), 0.0) if ve_row else 0,
+        "text_score": _safe_float(selected_evidence.get("text_score", 0), 0.0) if ve_row else 0,
+        "uq_score": _safe_float(selected_evidence.get("uq_score", 0), 0.0) if ve_row else 0,
+        "fusion_mode": fusion_mode,
+        "distillation": distillation,
+        "selected_candidate_rank": selected_rank,
+        "candidate_count": candidate_count,
+        "rank_metric": rank_metric,
+        "selected_by": selected_by,
+    }
+
+    # Build alignment candidates block
+    align_candidates: List[Dict[str, Any]] = []
+    for rec in alignments:
+        eid = str(rec.get("event_id") or rec.get("query_id") or "")
+        if not _event_id_matches(eid, matched_event_id or event_id):
+            continue
+        candidates = rec.get("candidates", [])
+        if not isinstance(candidates, list):
+            continue
+        scored = []
+        for c in candidates:
+            ov = _safe_float(c.get("overlap", 0), 0.0)
+            ac = _safe_float(c.get("action_confidence", 0), 0.0)
+            score = ov * 0.65 + ac * 0.35
+            scored.append((score, c))
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        for rank, (sc, c) in enumerate(scored, 1):
+            tid = int(_safe_float(c.get("track_id", -1), -1.0))
+            align_candidates.append({
+                "track_id": tid,
+                "student_id": f"S{tid:02d}",
+                "action": str(c.get("action", "")),
+                "semantic_id": str(c.get("semantic_id", "")),
+                "semantic_label_zh": str(c.get("semantic_label_zh", "")),
+                "semantic_label_en": str(c.get("semantic_label_en", "")),
+                "behavior_code": str(c.get("behavior_code", "")),
+                "behavior_label_zh": str(c.get("behavior_label_zh", "")),
+                "behavior_label_en": str(c.get("behavior_label_en", "")),
+                "start_time": _safe_float(c.get("start_time", 0), 0.0),
+                "end_time": _safe_float(c.get("end_time", 0), 0.0),
+                "overlap": _safe_float(c.get("overlap", 0), 0.0),
+                "action_confidence": _safe_float(c.get("action_confidence", 0), 0.0),
+                "uq_track": _safe_float(c.get("uq_track") or c.get("uq_score") or 0, 0.0),
+                "is_selected": (tid == selected_track_id),
+                "rank": rank,
+                "composite_score": round(sc, 4),
+            })
+        break
+
+    # Build media block
+    ws = float(query_block["window_start"])
+    we = float(query_block["window_end"])
+    if we <= ws:
+        we = ws + 2.0
+    video_stem = _front_video_stem(case_dir)
+    video_url = f"/api/media/stream/{case_id}"
+
+    media_block: Dict[str, Any] = {
+        "video_url": video_url,
+        "start_sec": round(ws, 3),
+        "end_sec": round(we, 3),
+        "video_stem": video_stem,
+    }
+
+    # Source files
+    source_files: Dict[str, str] = {}
+    for fname in ("verified_events.jsonl", "event_queries.fusion_v2.jsonl",
+                  "align_multimodal.json", "asr_quality_report.json"):
+        p = search_dir / fname
+        if p.exists():
+            source_files[fname] = str(p)
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "event_id": event_id,
+        "query": query_block,
+        "selected": selected_block,
+        "align_candidates": align_candidates,
+        "media": media_block,
+        "source_files": source_files,
+    }
+
+
+@app.get("/api/case/{case_id}/alignment/{event_id}")
+def get_event_alignment(case_id: str, event_id: str):
+    """Return raw alignment record for a single event with candidate rankings."""
+    ctx = _resolve_case_context(case_id)
+    if ctx is None:
+        raise HTTPException(404, f"Case not found: {case_id}")
+
+    alignments = _read_alignments_any(ctx)
+    verified = _read_verified_events_front(Path(ctx["case_dir"]))
+    if not verified and ctx.get("source_case_dir"):
+        verified = _read_verified_events_front(Path(ctx["source_case_dir"]))
+
+    # Find the alignment record
+    align_rec = None
+    for rec in alignments:
+        eid = str(rec.get("event_id") or rec.get("query_id") or "")
+        if _event_id_matches(eid, event_id):
+            align_rec = rec
+            break
+
+    if align_rec is None:
+        return {
+            "status": "alignment_not_found",
+            "case_id": case_id,
+            "event_id": event_id,
+            "message": f"No alignment record found for event_id={event_id} in case {case_id}.",
+            "selected_track_id": -1,
+            "selected_candidate_rank": 0,
+            "candidate_count": 0,
+            "rank_metric": "",
+            "selected_by": "",
+            "candidates": [],
+        }
+
+    # Find selected track_id from verified
+    selected_track_id = -1
+    for v in verified:
+        if _event_id_matches(str(v.get("event_id") or v.get("query_id") or ""), event_id):
+            selected_track_id = int(_safe_float(v.get("track_id", -1), -1.0))
+            break
+
+    # Build ranked candidates
+    candidates = align_rec.get("candidates", [])
+    if not isinstance(candidates, list):
+        candidates = []
+
+    scored = []
+    for c in candidates:
+        ov = _safe_float(c.get("overlap", 0), 0.0)
+        ac = _safe_float(c.get("action_confidence", 0), 0.0)
+        score = ov * 0.65 + ac * 0.35
+        scored.append((score, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    ranked: List[Dict[str, Any]] = []
+    for rank, (sc, c) in enumerate(scored, 1):
+        tid = int(_safe_float(c.get("track_id", -1), -1.0))
+        ranked.append({
+            "track_id": tid,
+            "student_id": f"S{tid:02d}",
+            "action": str(c.get("action", "")),
+            "semantic_id": str(c.get("semantic_id", "")),
+            "semantic_label_zh": str(c.get("semantic_label_zh", "")),
+            "semantic_label_en": str(c.get("semantic_label_en", "")),
+            "behavior_code": str(c.get("behavior_code", "")),
+            "behavior_label_zh": str(c.get("behavior_label_zh", "")),
+            "behavior_label_en": str(c.get("behavior_label_en", "")),
+            "start_time": _safe_float(c.get("start_time", 0), 0.0),
+            "end_time": _safe_float(c.get("end_time", 0), 0.0),
+            "overlap": _safe_float(c.get("overlap", 0), 0.0),
+            "action_confidence": _safe_float(c.get("action_confidence", 0), 0.0),
+            "uq_track": _safe_float(c.get("uq_track") or c.get("uq_score") or 0, 0.0),
+            "is_selected": (tid == selected_track_id),
+            "rank": rank,
+            "composite_score": round(sc, 4),
+        })
+
+    selected_rank, candidate_count, rank_metric, selected_by = _compute_selected_candidate_rank(event_id, selected_track_id, alignments)
+
+    return {
+        "status": "success",
+        "case_id": case_id,
+        "event_id": event_id,
+        "query_text": str(align_rec.get("query_text", "")),
+        "window_start": _safe_float(align_rec.get("window_start", 0), 0.0),
+        "window_end": _safe_float(align_rec.get("window_end", 0), 0.0),
+        "window_center": _safe_float(align_rec.get("window_center", 0), 0.0),
+        "window_size": _safe_float(align_rec.get("window_size", 0), 0.0),
+        "basis_motion": _safe_float(align_rec.get("basis_motion", 0), 0.0),
+        "basis_uq": _safe_float(align_rec.get("basis_uq", 0), 0.0),
+        "selected_track_id": selected_track_id,
+        "selected_candidate_rank": selected_rank,
+        "candidate_count": len(ranked),
+        "rank_metric": rank_metric,
+        "selected_by": selected_by,
+        "candidates": ranked,
+    }
+
+
+# ── Paper metrics provenance API ─────────────────────────────────
+
+@app.get("/api/paper/metrics")
+def get_paper_metrics():
+    """Return paper metrics with provenance: source file, sample size, quality tier."""
+    metrics: List[Dict[str, Any]] = []
+
+    # Read figure manifest
+    fig_path = PAPER_TABLE_DIR / "tbl05_figure_manifest.csv"
+    figure_map: Dict[str, Dict[str, Any]] = {}
+    if fig_path.exists():
+        for row in _read_csv_rows(fig_path):
+            fid = str(row.get("figure_id") or row.get("fig_id") or "")
+            if fid:
+                figure_map[fid] = {
+                    "figure_id": fid,
+                    "title": str(row.get("title") or row.get("description") or ""),
+                    "source_file": str(row.get("source_file") or row.get("data_source") or ""),
+                    "chart_path": str(row.get("chart_path") or row.get("figure_path") or ""),
+                }
+
+    # Read metric CI table
+    ci_path = PAPER_TABLE_DIR / "tbl01_run_metric_ci_enhanced.csv"
+    if ci_path.exists():
+        for row in _read_csv_rows(ci_path):
+            metric_name = str(row.get("metric") or row.get("Metric") or row.get("metric_name") or "")
+            if metric_name:
+                metrics.append({
+                    "metric_name": metric_name,
+                    "value": str(row.get("value") or row.get("Value") or ""),
+                    "ci_lower": str(row.get("ci_lower") or row.get("CI_lower") or ""),
+                    "ci_upper": str(row.get("ci_upper") or row.get("CI_upper") or ""),
+                    "source_file": str(row.get("source_file") or row.get("data_source") or "tbl01_run_metric_ci_enhanced.csv"),
+                    "sample_size": str(row.get("n") or row.get("sample_size") or ""),
+                    "quality_tier": str(row.get("quality_tier") or row.get("tier") or ""),
+                    "figure_id": str(row.get("figure_id") or ""),
+                })
+
+    # Read quality gate table
+    qg_path = PAPER_TABLE_DIR.parent / "paper_curated" / "tbl04_data_quality_gate.csv"
+    quality_gates: List[Dict[str, Any]] = []
+    if qg_path.exists():
+        for row in _read_csv_rows(qg_path):
+            quality_gates.append({str(k): v for k, v in row.items()})
+
+    return {
+        "status": "success",
+        "metrics": metrics,
+        "figures": figure_map,
+        "quality_gates": quality_gates,
+        "provenance": {
+            "metric_ci_table": str(ci_path) if ci_path.exists() else None,
+            "figure_manifest": str(fig_path) if fig_path.exists() else None,
+            "quality_gate_table": str(qg_path) if qg_path.exists() else None,
+        },
+    }
+
+
 # ── CANONICAL VSumVis routes (/api/v2/vsumvis/*) ────────
 
 @app.get("/api/v2/vsumvis/cases")
@@ -3719,11 +4683,21 @@ def get_vsumvis_cases():
 
 
 @app.get("/api/v2/vsumvis/case/{case_id}")
-def get_vsumvis_case_detail(case_id: str):
+def get_vsumvis_case_detail(
+    case_id: str,
+    label: str = Query("", description="Filter verified events by label: match, uncertain, mismatch"),
+):
     case_dir = _find_front_case_dir(case_id)
     if case_dir is None:
         raise HTTPException(404, f"VSumVis case not found: {case_id}")
-    return _build_vsumvis_case_detail(case_dir, case_id)
+    result = _build_vsumvis_case_detail(case_dir, case_id)
+    # Apply label filter if requested
+    if label and label in ("match", "uncertain", "mismatch"):
+        result["data"]["verified_events"] = [
+            ve for ve in result["data"]["verified_events"]
+            if str(ve.get("match_label") or ve.get("label") or "") == label
+        ]
+    return result
 
 
 # ── Cluster statistics ──────────────────────────────────────
@@ -4073,6 +5047,66 @@ def get_vsumvis_ablation_sr():
         "ablations": ablations,
         "total": len(ablations),
     }
+
+
+@app.get("/api/ablation/{dimension}")
+def get_ablation_by_dimension(
+    dimension: str,
+):
+    """Unified ablation endpoint: tracking, fusion, alignment, sr."""
+    dimension = dimension.lower().strip()
+    valid = {"tracking", "fusion", "alignment", "sr"}
+    if dimension not in valid:
+        raise HTTPException(400, f"Unknown ablation dimension: {dimension}. Valid: {', '.join(sorted(valid))}")
+
+    if dimension == "sr":
+        return get_vsumvis_ablation_sr()
+
+    # For tracking/fusion/alignment, try reading from paper tables
+    table_path = PAPER_TABLE_DIR / f"ablation_{dimension}.csv"
+    alt_path = DOCS_DIR / "assets" / "tables" / "paper_curated" / f"ablation_{dimension}.csv"
+
+    rows: List[Dict[str, Any]] = []
+    for p in (table_path, alt_path):
+        if p.exists():
+            rows = _read_csv_rows(p)
+            break
+
+    if not rows:
+        # Try to discover from SR ablation data aggregated by dimension
+        return {
+            "status": "success",
+            "dimension": dimension,
+            "ablations": [],
+            "total": 0,
+            "message": f"No pre-computed {dimension} ablation table found. Run the {dimension} ablation experiment and place results in {table_path}.",
+        }
+
+    return {
+        "status": "success",
+        "dimension": dimension,
+        "ablations": rows,
+        "total": len(rows),
+        "source_file": str(table_path) if table_path.exists() else str(alt_path),
+    }
+
+
+@app.get("/api/ablation")
+def get_ablation_list():
+    """List available ablation dimensions."""
+    available: List[Dict[str, Any]] = []
+    # SR is always available
+    available.append({"dimension": "sr", "available": True, "source": "VSumVis SR ablation cases"})
+    for dim in ("tracking", "fusion", "alignment"):
+        table_path = PAPER_TABLE_DIR / f"ablation_{dim}.csv"
+        alt_path = DOCS_DIR / "assets" / "tables" / "paper_curated" / f"ablation_{dim}.csv"
+        avail = table_path.exists() or alt_path.exists()
+        available.append({
+            "dimension": dim,
+            "available": avail,
+            "source": str(table_path) if table_path.exists() else (str(alt_path) if alt_path.exists() else None),
+        })
+    return {"status": "success", "dimensions": available, "ablations": available}
 
 
 @app.get("/api/v2/vsumvis/compare/sr")

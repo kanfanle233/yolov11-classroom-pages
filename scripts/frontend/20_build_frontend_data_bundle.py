@@ -3,12 +3,24 @@ import csv
 import json
 import os
 import shutil
+import subprocess
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-SCHEMA_VERSION = "2026-04-01+frontend_bundle_v1"
+SCHEMA_VERSION = "2026-05-01+frontend_bundle_v2"
+
+
+def _git_head_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short=8", "HEAD"],
+            cwd=Path(__file__).resolve().parent.parent.parent,
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 def _resolve(base_dir: Path, raw: str) -> Path:
@@ -102,6 +114,39 @@ def _lightweight_segments(jsonl_rows: List[Dict[str, Any]]) -> List[Dict[str, An
         }
         out.append({k: v for k, v in seg.items() if v is not None})
     return out
+
+
+def _derive_failure_reason(ve: Dict[str, Any]) -> str:
+    """Derive a human-readable failure reason from a verified event."""
+    label = str(ve.get("match_label") or ve.get("label") or "")
+    evidence = ve.get("evidence", {}) if isinstance(ve.get("evidence"), dict) else {}
+    p_match = _safe_float(ve.get("p_match"), 0.0)
+    p_mismatch = _safe_float(ve.get("p_mismatch"), 0.0)
+    reliability = _safe_float(ve.get("reliability_score") or ve.get("reliability"), 0.0)
+    v_score = _safe_float(evidence.get("visual_score") or evidence.get("c_visual"), 0.0)
+    t_score = _safe_float(evidence.get("text_score") or evidence.get("c_text"), 0.0)
+    uq = _safe_float(evidence.get("uq_score") or evidence.get("uq_track") or ve.get("uncertainty"), 0.0)
+
+    reasons: List[str] = []
+    if label == "mismatch":
+        if p_mismatch > 0.6:
+            reasons.append("strong mismatch signal")
+        if v_score < 0.5:
+            reasons.append("low visual score")
+        if t_score < 0.3:
+            reasons.append("low text score")
+        if not reasons:
+            reasons.append("visual-semantic conflict")
+    elif label == "uncertain":
+        if reliability < 0.5:
+            reasons.append("low reliability")
+        if uq > 0.3:
+            reasons.append("high track uncertainty")
+        if abs(p_match - p_mismatch) < 0.2:
+            reasons.append("ambiguous match/mismatch")
+        if not reasons:
+            reasons.append("borderline decision")
+    return "; ".join(reasons) if reasons else label
 
 
 def _sample_tracks(
@@ -279,11 +324,17 @@ def main() -> None:
         ),
         "actions_fusion_v2": _artifact_path(base_dir, case_dir, artifacts, "actions_fusion_v2", "actions.fusion_v2.jsonl"),
         "verified_events": _artifact_path(base_dir, case_dir, artifacts, "verified_events", "verified_events.jsonl"),
+        "event_queries": case_dir / "event_queries.fusion_v2.jsonl",
+        "align_multimodal": case_dir / "align_multimodal.json",
+        "asr_quality": case_dir / "asr_quality_report.json",
     }
     student_tracks_raw = _read_jsonl(source_paths["student_tracks"])
     behavior_semantic = _read_jsonl(source_paths["actions_behavior_semantic"])
     fusion_actions = _read_jsonl(source_paths["actions_fusion_v2"])
     verified_events = _read_jsonl(source_paths["verified_events"])
+    event_queries_raw = _read_jsonl(source_paths["event_queries"])
+    align_multimodal_raw = _read_json(source_paths["align_multimodal"])
+    asr_quality_raw = _read_json(source_paths["asr_quality"])
 
     # --- Metrics ---
     metrics_path = _resolve(base_dir, args.metrics_file) if args.metrics_file else (
@@ -296,6 +347,13 @@ def main() -> None:
     ablation_rows: List[Dict[str, Any]] = []
     if args.ablation_summary:
         ablation_rows = _collect_ablation_summary(_resolve(base_dir, args.ablation_summary))
+
+    # --- Sample tracks early (needed by student list fallback) ---
+    tracks_sampled = _sample_tracks(
+        student_tracks_raw,
+        max_per_track=args.max_track_samples * 2,
+        max_frames_per_track=args.max_track_samples,
+    )
 
     # --- Transform ---
     students = _build_student_list(timeline_csv)
@@ -325,12 +383,6 @@ def main() -> None:
 
     behavior_segments = _lightweight_segments(behavior_semantic)
     fusion_segments = _lightweight_segments(fusion_actions)
-
-    tracks_sampled = _sample_tracks(
-        student_tracks_raw,
-        max_per_track=args.max_track_samples * 2,
-        max_frames_per_track=args.max_track_samples,
-    )
 
     # --- Copy assets ---
     asset_copies: Dict[str, str] = {}
@@ -374,7 +426,51 @@ def main() -> None:
     })
     _write_json(out_dir / "student_id_map.json", student_id_map)
     _write_json(out_dir / "metrics_summary.json", {"case_id": case_id, **metrics_summary})
-    _write_json(out_dir / "failure_cases.json", {"case_id": case_id, "items": []})
+    # Populate failure cases from verified_events (mismatch + uncertain)
+    failure_items: List[Dict[str, Any]] = []
+    student_id_by_track: Dict[int, str] = {s["track_id"]: s["student_id"] for s in students}
+    for ve in verified_events:
+        label = str(ve.get("match_label") or ve.get("label") or "")
+        if label in ("mismatch", "uncertain"):
+            tid = _safe_int(ve.get("track_id"), -1)
+            evidence = ve.get("evidence", {}) if isinstance(ve.get("evidence"), dict) else {}
+            failure_items.append({
+                "event_id": str(ve.get("event_id") or ve.get("query_id") or ""),
+                "query_text": str(ve.get("query_text", "")),
+                "track_id": tid,
+                "student_id": student_id_by_track.get(tid, f"S{tid:02d}"),
+                "label": label,
+                "p_match": _safe_float(ve.get("p_match"), 0.0),
+                "p_mismatch": _safe_float(ve.get("p_mismatch"), 0.0),
+                "reliability_score": _safe_float(ve.get("reliability_score") or ve.get("reliability"), 0.0),
+                "uncertainty": _safe_float(ve.get("uncertainty"), 0.0),
+                "visual_score": _safe_float(evidence.get("visual_score") or evidence.get("c_visual"), 0.0),
+                "text_score": _safe_float(evidence.get("text_score") or evidence.get("c_text"), 0.0),
+                "uq_score": _safe_float(evidence.get("uq_score") or evidence.get("uq_track"), 0.0),
+                "failure_reason": _derive_failure_reason(ve),
+            })
+    _write_json(out_dir / "failure_cases.json", {"case_id": case_id, "items": failure_items})
+
+    # Write new v2 files
+    _write_json(out_dir / "event_queries.json", {
+        "case_id": case_id,
+        "queries": event_queries_raw,
+    })
+    _write_json(out_dir / "align_multimodal.json", {
+        "case_id": case_id,
+        "alignments": align_multimodal_raw if isinstance(align_multimodal_raw, list) else [],
+    })
+    _write_json(out_dir / "asr_quality.json", {
+        "case_id": case_id,
+        "report": asr_quality_raw,
+    })
+    _write_json(out_dir / "contract_summary.json", {
+        "case_id": case_id,
+        "contract_status": contract.get("status", "unknown"),
+        "counts": contract.get("counts", {}),
+        "checks": contract.get("checks", contract.get("results", [])),
+    })
+
     if ablation_rows:
         _write_json(out_dir / "ablation_summary.json", {
             "case_id": case_id,
@@ -397,11 +493,18 @@ def main() -> None:
             "student_id_map": "student_id_map.json",
             "metrics_summary": "metrics_summary.json",
             "failure_cases": "failure_cases.json",
+            "event_queries": "event_queries.json",
+            "align_multimodal": "align_multimodal.json",
+            "asr_quality": "asr_quality.json",
+            "contract_summary": "contract_summary.json",
         },
         "assets": asset_copies,
         "students": students,
         "tracked_students": len(students),
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generator_commit": _git_head_commit(),
+        "compat_with": ["v1"],
         "source_files": {k: str(v) for k, v in source_paths.items()},
     }
     if ablation_rows:
@@ -415,6 +518,10 @@ def main() -> None:
     print(f"  fusion segments: {len(fusion_segments)}")
     print(f"  tracks sampled: {len(tracks_sampled)}")
     print(f"  verified events: {len(verified_events)}")
+    print(f"  event queries: {len(event_queries_raw)}")
+    print(f"  align multimodal events: {len(align_multimodal_raw) if isinstance(align_multimodal_raw, list) else 0}")
+    print(f"  asr quality: {'yes' if asr_quality_raw else 'no'}")
+    print(f"  failure cases: {len(failure_items)}")
     print(f"  metrics gt_status: {metrics_summary.get('gt_status', 'unknown')}")
     print(f"  assets: {list(asset_copies.keys())}")
 

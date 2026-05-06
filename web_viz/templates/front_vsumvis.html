@@ -608,6 +608,12 @@ function getStableId(d) {
     || `${(typeof d?.t_center === 'number' ? d.t_center.toFixed(2) : '0')}_trk${d?.track_id ?? '?'}_${d?.behavior_code ?? ''}`;
 }
 
+function normalizeStableId(item) {
+  if (item == null) return null;
+  if (typeof item === "string" || typeof item === "number") return String(item);
+  return getStableId(item);
+}
+
 function getAlignScore(d) {
   // Priority chain for alignment score
   const v = d?.align_score
@@ -631,7 +637,13 @@ function getAlignSource(d) {
 
 // ── Selection utilities ──
 function updateSelection(ids) {
-  ST.selectedIds = new Set(ids.map(getStableId));
+  const normalized = (ids || []).map(normalizeStableId).filter(Boolean);
+  ST.selectedIds = new Set(normalized);
+  if (!normalized.length) {
+    ST.selectedEventId = null;
+  } else if (!ST.selectedEventId || !ST.selectedIds.has(ST.selectedEventId)) {
+    ST.selectedEventId = normalized[0];
+  }
   ST.lassoPolygon = null;
   refreshAllViews();
 }
@@ -659,11 +671,15 @@ function refreshAllViews() {
 
 // ── Timeline data loading ──
 async function loadTimelineData() {
+  const token = (ST._timelineLoadToken = (ST._timelineLoadToken || 0) + 1);
   try {
     const resp = await api(`/api/v2/vsumvis/timeline/${ST.activeCaseId}`);
+    if (token !== ST._timelineLoadToken) return;
     ST.timelineData = resp.data || resp;
     console.log("[vsumvis] timeline source = api");
+    if (!ST.showAblation && ST.bottomViewMode !== "score") renderBottomView();
   } catch (err) {
+    if (token !== ST._timelineLoadToken) return;
     console.warn("[vsumvis] timeline source = fallback (" + (err.message || err) + ")");
     ST.timelineData = null;
   }
@@ -677,10 +693,12 @@ async function loadClusterData() {
     if (token !== ST._clusterLoadToken) return;
     ST.clusterData = resp.clusters || [];
     console.log("[vsumvis] cluster source = api (" + ST.clusterData.length + " clusters)");
+    if (!ST.showAblation && ST.projectionMode === "glyphs") renderProjection();
   } catch (err) {
     if (token !== ST._clusterLoadToken) return;
     console.warn("[vsumvis] cluster source = fallback (" + (err.message || err) + ")");
     ST.clusterData = _buildClustersFromProjection();
+    if (!ST.showAblation && ST.projectionMode === "glyphs") renderProjection();
   }
 }
 
@@ -1069,7 +1087,7 @@ function renderPointsProjection() {
     .attr("cx", d => d._x).attr("cy", d => d._y)
     .attr("r", d => {
       const sel = isSelected(d);
-      const sv = (d.event_id || d.point_id) === ST.selectedEventId;
+      const sv = getStableId(d) === ST.selectedEventId;
       return sel || sv ? dotR + 2 : dotR;
     })
     .attr("fill", d => {
@@ -1086,9 +1104,9 @@ function renderPointsProjection() {
     .attr("stroke-width", d => isSelected(d) ? 1.2 : 0)
     .style("cursor", "pointer")
     .on("mouseover", function(ev, d) {
-      ST.hoveredEventId = d.event_id;
+      ST.hoveredEventId = getStableId(d);
       showTooltip(ev, d);
-      highlightLinked(d.event_id, d.track_id);
+      highlightLinked(getStableId(d), d.track_id);
     })
     .on("mouseout", function() {
       ST.hoveredEventId = null;
@@ -1102,7 +1120,7 @@ function renderPointsProjection() {
       seekVideo(d.t_center);
       showEvidencePanel(d);
       updateSelection([d]);
-      updateDetailTableSelection(d.event_id || d.point_id);
+      updateDetailTableSelection(getStableId(d));
     });
 
   // ── Lasso drawing ──
@@ -1149,11 +1167,11 @@ function renderPointsProjection() {
     const selected = [];
     for (const pt of scaledPts) {
       if (d3.polygonContains(poly, [pt._x, pt._y])) {
-        selected.push(pt.event_id || pt.point_id);
+        selected.push(pt);
       }
     }
     if (selected.length > 0) {
-      updateSelection(selected.map(p => getStableId(p)));
+      updateSelection(selected);
     }
     lassoPoints = [];
   });
@@ -1250,15 +1268,15 @@ function renderGlyphProjection() {
         .attr("stroke-width", sel ? 2.5 : 0);
       hideTooltip();
     })
-    .on("click", function(ev, d) {
-      const ids = (d.ids || []).slice(0, 100);
-      if (ids.length > 0) {
-        updateSelection(ids);
-        ST.selectedEventId = ids[0];
-        const pt = points.find(p => (p.event_id || p.point_id) === ids[0]);
-        if (pt) seekVideo(pt.t_center || 0);
-      }
-    });
+      .on("click", function(ev, d) {
+        const ids = (d.ids || []).slice(0, 100);
+        if (ids.length > 0) {
+          updateSelection(ids);
+          ST.selectedEventId = ids[0];
+          const pt = points.find(p => getStableId(p) === ids[0]);
+          if (pt) seekVideo(pt.t_center || 0);
+        }
+      });
 
   // Background white circle
   glyphG.append("circle")
@@ -1343,19 +1361,17 @@ function showGlyphTooltip(ev, d) {
 }
 
 function updateProjectionSelection() {
-  d3.selectAll(".glyph, .proj-dot")
-    .classed("selected", d => d.event_id === ST.selectedEventId);
+  d3.selectAll(".proj-glyph-g, .proj-dot")
+    .classed("selected", d => getStableId(d) === ST.selectedEventId);
 }
 
 function highlightLinked(eventId, trackId) {
-  d3.selectAll(".glyph, .proj-dot").transition().duration(100)
-    .attr("opacity", d => (d.event_id === eventId || d.track_id === trackId) ? 1 : 0.10);
-  d3.selectAll(".glyph").transition().duration(100)
-    .attr("opacity", d => (d.event_id === eventId || d.track_id === trackId) ? 1 : 0.10);
+  d3.selectAll(".proj-glyph-g, .proj-dot").transition().duration(100)
+    .attr("opacity", d => (getStableId(d) === eventId || d.track_id === trackId) ? 1 : 0.10);
 }
 
 function clearHighlight() {
-  d3.selectAll(".glyph, .proj-dot").transition().duration(100).attr("opacity", 1);
+  d3.selectAll(".proj-glyph-g, .proj-dot").transition().duration(100).attr("opacity", 1);
 }
 
 // ====================================================================
@@ -1444,8 +1460,8 @@ function renderParallelCoordinates() {
     .attr("opacity", 0.28)
     .on("mouseover", function(ev, d) {
       d3.select(this).attr("opacity", 0.85).attr("stroke-width", 2);
-      ST.hoveredEventId = d.event_id;
-      highlightLinked(d.event_id, d.track_id);
+      ST.hoveredEventId = getStableId(d);
+      highlightLinked(getStableId(d), d.track_id);
       showTooltip(ev, d);
     })
     .on("mouseout", function() {
@@ -1455,11 +1471,12 @@ function renderParallelCoordinates() {
       clearHighlight();
     })
     .on("click", function(ev, d) {
-      ST.selectedEventId = d.event_id;
+      ST.selectedEventId = getStableId(d);
       seekVideo(d.t_center);
       showEvidencePanel(d);
-      highlightLinked(d.event_id, d.track_id);
-      updateDetailTableSelection(d.event_id);
+      updateSelection([d]);
+      highlightLinked(getStableId(d), d.track_id);
+      updateDetailTableSelection(getStableId(d));
     });
 
   // Debounced global refresh after axis brush
@@ -1563,8 +1580,8 @@ function renderParallelCoordinates() {
           const hi = yScales[axis].invert(y0);
           ST.featureRows = (ST.caseData?.feature_rows || []).filter(r => r[axis] >= lo && r[axis] <= hi);
           if (ST.featureRows.length < (ST.caseData?.feature_rows?.length || 0)) {
-            const eids = new Set(ST.featureRows.map(r => r.event_id));
-            ST.projectionPoints = (ST.caseData?.projection_points || []).filter(p => eids.has(p.event_id));
+            const eids = new Set(ST.featureRows.map(r => getStableId(r)));
+            ST.projectionPoints = (ST.caseData?.projection_points || []).filter(p => eids.has(getStableId(p)));
           }
           debouncedRefresh();
         })
@@ -1753,8 +1770,8 @@ function filterByBrush() {
   const [lo, hi] = ST.brushExtent;
   const allRows = ST.caseData?.feature_rows || [];
   ST.featureRows = allRows.filter(r => r.t_center >= lo && r.t_center <= hi);
-  const eids = new Set(ST.featureRows.map(r => r.event_id));
-  ST.projectionPoints = (ST.caseData?.projection_points || []).filter(p => eids.has(p.event_id));
+  const eids = new Set(ST.featureRows.map(r => getStableId(r)));
+  ST.projectionPoints = (ST.caseData?.projection_points || []).filter(p => eids.has(getStableId(p)));
   ST.sequenceSeries = (ST.caseData?.sequence_series || []).filter(s => s.t >= lo && s.t <= hi);
   renderProjection();
   renderParallelCoordinates();
@@ -1785,8 +1802,9 @@ function renderDetailTable() {
 
   const rows = ST.featureRows.slice(0, 200);
   body.innerHTML = rows.map(r => {
-    const sel = r.event_id === ST.selectedEventId ? " selected" : "";
-    return `<tr class="${sel}" data-event-id="${r.event_id}" onclick="selectTableRow('${r.event_id}',${r.t_center})">
+    const sid = getStableId(r);
+    const sel = sid === ST.selectedEventId ? " selected" : "";
+    return `<tr class="${sel}" data-event-id="${sid}" onclick="selectTableRow('${sid}',${r.t_center})">
       ${cols.map(c => {
         let v = r[c];
         if (c === "verification_status") {
@@ -1804,6 +1822,7 @@ function selectTableRow(eid, tc) {
   ST.selectedEventId = eid;
   seekVideo(tc);
   showEvidencePanelById(eid);
+  updateSelection([eid]);
   highlightLinked(eid, null);
   updateDetailTableSelection(eid);
   updateProjectionSelection();
@@ -1933,15 +1952,16 @@ function showTooltip(ev, d) {
   const tip = document.getElementById("tooltip");
   const status = d.verification_status || "unverified";
   const cls = status === "match" ? "tt-match" : status === "uncertain" ? "tt-uncertain" : "tt-mismatch";
+  const alignScore = getAlignScore(d);
   tip.innerHTML = `
-    <div class="tt-row"><span class="tt-label">ID</span><span>${d.event_id || d.point_id || '–'}</span></div>
+    <div class="tt-row"><span class="tt-label">ID</span><span>${getStableId(d) || '–'}</span></div>
     <div class="tt-row"><span class="tt-label">Status</span><span class="${cls}">${status}</span></div>
     <div class="tt-row"><span class="tt-label">Track</span><span>${d.track_id ?? '–'}</span></div>
     <div class="tt-row"><span class="tt-label">Behavior</span><span>${d.semantic_label_en || d.behavior_code || '–'} / ${d.semantic_label_zh || ''}</span></div>
     <div class="tt-row"><span class="tt-label">Time</span><span>${d.t_center?.toFixed?.(1) ?? d.t_center ?? '–'}s</span></div>
     <div class="tt-row"><span class="tt-label">C_VIS</span><span>${d.c_visual?.toFixed?.(3) ?? '–'}</span></div>
     <div class="tt-row"><span class="tt-label">C_TXT</span><span>${d.c_text?.toFixed?.(3) ?? '–'}</span></div>
-    <div class="tt-row"><span class="tt-label">ALIGN</span><span>${d.reliability_final?.toFixed?.(3) ?? '–'}</span></div>
+    <div class="tt-row"><span class="tt-label">ALIGN</span><span>${Number.isFinite(alignScore) ? alignScore.toFixed(3) : '–'}</span></div>
     <div class="tt-row"><span class="tt-label">UQ</span><span>${d.uq_track?.toFixed?.(3) ?? '–'}</span></div>
     <div class="tt-row"><span class="tt-label">P(Match)</span><span>${d.p_match?.toFixed?.(3) ?? '–'}</span></div>
   `;
@@ -1964,14 +1984,26 @@ function showEvidencePanel(d) {
   const query = ST.caseData?.event_queries?.find(q => q.event_id === d.event_id) || {};
   const nearby = ST.transcript.filter(t => {
     const tc = d.t_center || 0;
-    return t.start <= tc + 3 && t.end >= tc - 3;
+    const t0 = t.start ?? t.start_time ?? 0;
+    const t1 = t.end ?? t.end_time ?? 0;
+    return t0 <= tc + 3 && t1 >= tc - 3;
   });
   const status = d.verification_status || ve.match_label || "unverified";
+  const qSrc = d.query_source || ve.query_source || query.query_source || "unknown";
+  const isFallback = d.is_visual_fallback || ve.is_visual_fallback || query.is_visual_fallback || false;
+  const querySourceLabel = isFallback
+    ? '<span style="color:var(--uncertain);font-weight:600;" title="ASR unavailable; visual fallback used">⚠ Visual Fallback</span>'
+    : (qSrc === "asr" ? '<span style="color:var(--match);font-weight:600;">✓ ASR</span>' : qSrc);
+
   content.innerHTML = `
     <div class="ev-section">
       <div class="ev-section-title">Event</div>
-      <strong style="font-size:14px;">${d.event_id || '–'}</strong>
+      <strong style="font-size:14px;">${getStableId(d) || '–'}</strong>
       <span style="margin-left:8px;font-weight:600;color:${ST.statusColor(status)}">${status}</span>
+    </div>
+    <div class="ev-section">
+      <div class="ev-section-title">Query Source</div>
+      ${querySourceLabel}
     </div>
     <div class="ev-section">
       <div class="ev-section-title">Student &amp; Behavior</div>
@@ -1986,6 +2018,7 @@ function showEvidencePanel(d) {
       <div class="ev-section-title">Verification Scores</div>
       <table style="width:100%;font-size:11px;">
         <tr><td>P(Match)</td><td style="font-weight:600;">${(d.p_match ?? ve.p_match ?? 0).toFixed(4)}</td></tr>
+        <tr><td>P(Mismatch)</td><td style="font-weight:600;">${(d.p_mismatch ?? ve.p_mismatch ?? 0).toFixed(4)}</td></tr>
         <tr><td>Reliability</td><td style="font-weight:600;">${(d.reliability_final ?? ve.reliability_score ?? 0).toFixed(4)}</td></tr>
         <tr><td>Uncertainty</td><td style="font-weight:600;">${(d.uq_track ?? ve.uncertainty ?? 0).toFixed(4)}</td></tr>
       </table>
@@ -1998,21 +2031,92 @@ function showEvidencePanel(d) {
       w<sub>A</sub> = ${d.weight_a?.toFixed?.(3) ?? '–'}
     </div>
     <div class="ev-section">
-      <div class="ev-section-title">Query Text (ASR)</div>
+      <div class="ev-section-title">Query Text</div>
       <span style="font-style:italic;color:var(--text-mid);">"${ve.query_text || query.query_text || '–'}"</span>
     </div>
     <div class="ev-section">
       <div class="ev-section-title">Nearby Transcript</div>
       ${nearby.slice(0,5).map(t =>
-        `<div style="margin:3px 0;font-size:10px;color:var(--text-mid);"><span style="color:var(--text-dim);">[${t.start?.toFixed?.(1)||'?'}s]</span> ${t.text}</div>`
+        `<div style="margin:3px 0;font-size:10px;color:var(--text-mid);"><span style="color:var(--text-dim);">[${(t.start ?? t.start_time ?? 0).toFixed(1)}s]</span> ${t.text}</div>`
       ).join("") || '<span style="color:var(--text-dim);">–</span>'}
+    </div>
+    <div id="evidence-api-section" class="ev-section" style="display:none;">
+      <div class="ev-section-title">Top-K Alignment Candidates <span style="font-weight:400;color:var(--text-dim);">(evidence API)</span></div>
+      <div id="evidence-api-content"></div>
     </div>
   `;
   panel.classList.add("visible");
+
+  // Fetch full evidence from the API asynchronously
+  const caseId = ST.activeCaseId || ST.caseId || "";
+  const eventId = d.event_id || getStableId(d) || "";
+  if (caseId && eventId) {
+    fetchEvidenceAPI(caseId, eventId);
+  }
+}
+
+async function fetchEvidenceAPI(caseId, eventId) {
+  const section = document.getElementById("evidence-api-section");
+  const content = document.getElementById("evidence-api-content");
+  if (!section || !content) return;
+  try {
+    const resp = await fetch(`/api/case/${encodeURIComponent(caseId)}/evidence/${encodeURIComponent(eventId)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const selected = data.selected || {};
+    const dist = selected.distillation || {};
+    const candidates = data.align_candidates || [];
+    if (!candidates.length && !selected) return;
+
+    section.style.display = "";
+    const selTrackId = selected.track_id;
+    const distEnabled = !!dist.enabled;
+    const fusionMode = dist.fusion_mode || selected.fusion_mode || "unknown";
+    const verifierLabel = distEnabled ? "LLM-Distilled Student V4" : `Fallback / ${fusionMode}`;
+    const teacherSource = dist.teacher_source || "n/a";
+    const teacherDataset = dist.teacher_dataset || "n/a";
+    const featureVersion = dist.student_feature_version || "n/a";
+    const modelName = dist.student_model_name || "n/a";
+    let html = `<div style="margin-bottom:8px;padding:6px;border:1px solid var(--panel-border);border-radius:6px;background:rgba(255,255,255,0.04);font-size:10px;">
+      <div style="font-weight:700;color:${distEnabled ? 'var(--match)' : 'var(--text-mid)'};">${verifierLabel}</div>
+      <div style="margin-top:3px;color:var(--text-dim);">
+        fusion=${fusionMode} &nbsp; model=${modelName}<br>
+        teacher=${teacherSource} &nbsp; dataset=${teacherDataset}<br>
+        feature=${featureVersion} &nbsp; benchmark=${dist.evaluation_kind || 'runtime_verifier'}
+      </div>
+      <div style="margin-top:3px;color:var(--uncertain);">Silver benchmark only; not human gold accuracy.</div>
+    </div>`;
+    if (!candidates.length) {
+      content.innerHTML = html;
+      return;
+    }
+    html += `<div style="margin-bottom:4px;font-size:10px;color:var(--text-dim);">
+      Selected: Student ${selected.student_id || ('S' + String(selTrackId).padStart(2,'0'))} (rank ${selected.selected_candidate_rank || '?'}/${selected.candidate_count || '?'})
+    </div>`;
+    html += `<table style="width:100%;font-size:10px;border-collapse:collapse;">`;
+    html += `<tr style="color:var(--text-dim);"><th style="text-align:left;">Rank</th><th>Student</th><th>Action</th><th>Overlap</th><th>Conf</th><th>UQ</th></tr>`;
+    for (const c of candidates.slice(0, 8)) {
+      const isSel = c.track_id === selTrackId;
+      const bg = isSel ? 'background:var(--accent-light);' : '';
+      html += `<tr style="${bg}">
+        <td style="font-weight:${isSel ? 700 : 400};">${c.rank || '–'}</td>
+        <td>${c.student_id || ('S' + String(c.track_id).padStart(2,'0'))}</td>
+        <td>${c.semantic_label_en || c.action || '–'}</td>
+        <td>${(c.overlap||0).toFixed(2)}</td>
+        <td>${(c.action_confidence||0).toFixed(2)}</td>
+        <td>${(c.uq_track||0).toFixed(2)}</td>
+      </tr>`;
+    }
+    html += `</table>`;
+    content.innerHTML = html;
+  } catch (e) {
+    // Evidence API unavailable — leave section hidden
+  }
 }
 
 function showEvidencePanelById(eid) {
-  const row = ST.featureRows.find(r => r.event_id === eid);
+  const fullRows = ST.caseData?.feature_rows || ST.featureRows;
+  const row = fullRows.find(r => getStableId(r) === eid || r.event_id === eid);
   if (row) showEvidencePanel(row);
 }
 
@@ -2486,6 +2590,8 @@ function renderTimelineView() {
         seekVideo(d.t_center || d.start_time || d.query_time || 0);
         updateSelection([d]);
         ST.selectedEventId = sid;
+        updateDetailTableSelection(sid);
+        showEvidencePanelById(sid);
       });
   }
 
@@ -2512,7 +2618,7 @@ function renderTimelineView() {
       .attr("height", trackH - 3).attr("rx", 2)
       .attr("fill", "#7C83FF").attr("fill-opacity", 0.35).attr("stroke", "none")
       .on("mouseover", function(ev) { d3.select(this).attr("fill-opacity", 0.7); showTimelineTooltip(ev, { ...t, kind: "transcript" }); })
-      .on("mouseout", function() { d3.select(this).attr("fill-opacity", 0.35); });
+      .on("mouseout", function() { d3.select(this).attr("fill-opacity", 0.35); hideTooltip(); });
   }
 
   // ── Track 2: Alignments ──
@@ -2535,10 +2641,12 @@ function renderTimelineView() {
       const [bx0, bx1] = ev.selection;
       ST.brushExtent = [xScale.invert(bx0), xScale.invert(bx1)];
       throttledTimelineBrush();
+      filterByBrushDebounced();
     })
     .on("end", function(ev) {
       if (!ev.selection) {
         ST.brushExtent = [0, Infinity];
+        updateSelection([]);
         filterByBrushDebounced();
       }
     });
@@ -2585,10 +2693,7 @@ const throttledTimelineBrush = throttle(() => {
     const t = ve.query_time || ve.window_start || 0;
     if (t >= lo && t <= hi) eids.add(getStableId(ve));
   }
-  if (eids.size > 0) {
-    ST.selectedIds = eids;
-    refreshAllViews();
-  }
+  updateSelection([...eids]);
 }, 80);
 
 function showTimelineTooltip(ev, d) {
@@ -2596,17 +2701,21 @@ function showTimelineTooltip(ev, d) {
   const st = d.match_status || d.match_label || "unverified";
   const cls = st === "match" ? "tt-match" : st === "uncertain" ? "tt-uncertain" : "tt-mismatch";
   if (d.kind === "transcript") {
+    const t0 = d.start_time ?? d.start ?? 0;
+    const t1 = d.end_time ?? d.end ?? 0;
     tip.innerHTML = `
-      <div class="tt-row"><span class="tt-label">Transcript</span><span>${(d.start||0).toFixed(1)}–${(d.end||0).toFixed(1)}s</span></div>
-      <div style="margin-top:3px;font-size:10px;line-height:1.4;max-width:280px;">${d.text || '–'}</div>`;
+      <div class="tt-row"><span class="tt-label">Transcript</span><span>${t0.toFixed(1)}-${t1.toFixed(1)}s</span></div>
+      <div style="margin-top:3px;font-size:10px;line-height:1.4;max-width:280px;">${d.text || '-'}</div>`;
   } else {
+    const t0 = d.start_time ?? d.window_start ?? 0;
+    const t1 = d.end_time ?? d.window_end ?? 0;
     tip.innerHTML = `
-      <div class="tt-row"><span class="tt-label">ID</span><span>${d.event_id || d.segment_id || d.query_id || '–'}</span></div>
-      <div class="tt-row"><span class="tt-label">Time</span><span>${(d.start_time||d.window_start||0)?.toFixed?.(1)??0}–${(d.end_time||d.window_end||0)?.toFixed?.(1)??0}s</span></div>
+      <div class="tt-row"><span class="tt-label">ID</span><span>${d.event_id || d.segment_id || d.query_id || '-'}</span></div>
+      <div class="tt-row"><span class="tt-label">Time</span><span>${t0.toFixed(1)}-${t1.toFixed(1)}s</span></div>
       <div class="tt-row"><span class="tt-label">Status</span><span class="${cls}">${st}</span></div>
-      <div class="tt-row"><span class="tt-label">Track</span><span>${d.track_id ?? '–'}</span></div>
-      <div class="tt-row"><span class="tt-label">Behavior</span><span>${d.semantic_label_en || d.behavior_code || '–'}</span></div>
-      <div class="tt-row"><span class="tt-label">Fusion</span><span>C_VIS ${(d.c_vis||d.c_visual||0)?.toFixed?.(3)??'–'}  C_TXT ${(d.c_txt||d.c_text||0)?.toFixed?.(3)??'–'}</span></div>`;
+      <div class="tt-row"><span class="tt-label">Track</span><span>${d.track_id ?? '-'}</span></div>
+      <div class="tt-row"><span class="tt-label">Behavior</span><span>${d.semantic_label_en || d.behavior_code || '-'}</span></div>
+      <div class="tt-row"><span class="tt-label">Fusion</span><span>C_VIS ${((d.c_vis ?? d.c_visual ?? 0)).toFixed(3)}  C_TXT ${((d.c_txt ?? d.c_text ?? 0)).toFixed(3)}</span></div>`;
   }
   tip.style.left = (ev.clientX + 18) + "px";
   tip.style.top  = (ev.clientY - 8) + "px";
@@ -2647,7 +2756,7 @@ function renderMultimodalView() {
     return;
   }
 
-  const margin = {top: 8, right: 32, bottom: 28, left: 48};
+  const margin = {top: 8, right: 92, bottom: 28, left: 48};
   const iW = W - margin.left - margin.right;
   const iH = H - margin.top - margin.bottom;
 
@@ -2668,7 +2777,8 @@ function renderMultimodalView() {
     { key: "uq_track", label: "UQ", color: FEATURE_COLORS.uq, dash: "3,2" },
   ];
 
-  for (const ln of lines) {
+  const legendG = g.append("g").attr("transform", `translate(${iW + 8}, 8)`);
+  for (const [idx, ln] of lines.entries()) {
     const vals = series.map(s => ({t: s.t, v: s[ln.key] !== undefined ? s[ln.key] : 0}));
     const lineFn = d3.line().x(d => xScale(d.t)).y(d => yScale(d.v)).curve(d3.curveStepAfter);
     g.append("path").datum(vals)
@@ -2677,9 +2787,14 @@ function renderMultimodalView() {
       .attr("stroke-dasharray", ln.dash)
       .attr("d", lineFn);
 
-    // Legend
-    g.append("text")
-      .attr("x", iW + 4).attr("y", yScale(0.95))
+    legendG.append("line")
+      .attr("x1", 0).attr("x2", 12)
+      .attr("y1", idx * 12).attr("y2", idx * 12)
+      .attr("stroke", ln.color)
+      .attr("stroke-width", ln.key === "score_model" ? 2 : 1.2)
+      .attr("stroke-dasharray", ln.dash);
+    legendG.append("text")
+      .attr("x", 16).attr("y", idx * 12 + 3)
       .attr("fill", ln.color).style("font-size", "8px").style("font-weight", "500")
       .text(ln.label);
   }

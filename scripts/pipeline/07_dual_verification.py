@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from contracts.schemas import SCHEMA_VERSION, validate_jsonl_file, validate_verified_event_record
-from verifier.infer import infer_verified_rows
+from verifier.infer import infer_verified_rows, resolve_llm_student_model_path
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -263,6 +263,8 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=str, help="verified_events.jsonl")
     parser.add_argument("--verifier_model", default="", type=str, help="trained verifier checkpoint (.pt)")
     parser.add_argument("--verifier_config", default="", type=str, help="compat alias for --verifier_model")
+    parser.add_argument("--llm_student_model", default="auto", type=str,
+                        help="student judge .joblib model path; auto uses V4 default, off disables")
     parser.add_argument("--keep_all_candidates", type=int, default=0)
     parser.add_argument("--per_person_out", default="", type=str, help="optional compatibility export")
     parser.add_argument("--validate", type=int, default=1)
@@ -275,6 +277,7 @@ def main() -> None:
     aligned_path = Path(args.aligned) if args.aligned else None
     out_path = Path(args.out)
     model_path = Path(args.verifier_model or args.verifier_config) if (args.verifier_model or args.verifier_config) else None
+    llm_student_model_path = resolve_llm_student_model_path(args.llm_student_model)
     per_person_out = Path(args.per_person_out) if args.per_person_out else None
 
     if not action_path.is_absolute():
@@ -316,6 +319,7 @@ def main() -> None:
         pose_uq_path=uq_path,
         model_path=model_path,
         keep_all_candidates=bool(int(args.keep_all_candidates)),
+        llm_student_model_path=llm_student_model_path,
     )
 
     model_version = f"verifier:{model_path.stem}" if (model_path and model_path.exists()) else "heuristic_v1"
@@ -372,11 +376,7 @@ def main() -> None:
             "semantic_label_zh": str(row.get("semantic_label_zh", "")),
             "semantic_label_en": str(row.get("semantic_label_en", "")),
             "taxonomy_version": str(row.get("taxonomy_version", "")),
-            "evidence": {
-                "visual_score": _safe_float(evidence.get("visual_score", 0.0), 0.0),
-                "text_score": _safe_float(evidence.get("text_score", 0.0), 0.0),
-                "uq_score": _safe_float(evidence.get("uq_score", 1.0), 1.0),
-            },
+            "evidence": {k: v for k, v in evidence.items() if v is not None},
         }
         verified_rows.append(out_row)
 

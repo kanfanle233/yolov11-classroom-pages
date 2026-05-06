@@ -141,6 +141,17 @@ def resolve_model_or_fail(model_arg: str) -> str:
     return model_arg
 
 
+def resolve_llm_student_model_arg(model_arg: str):
+    text = str(model_arg or "auto").strip()
+    lowered = text.lower()
+    if lowered in {"auto", "default", "v4"}:
+        return (PROJECT_ROOT / "output" / "llm_judge_pipeline" / "models" / "student_judge_v4_best.joblib").resolve()
+    if lowered in {"off", "none", "disable", "disabled", "false", "0"}:
+        return None
+    candidate = Path(text)
+    return candidate.resolve() if candidate.is_absolute() else (PROJECT_ROOT / candidate).resolve()
+
+
 def resolve_video_path(video_arg: str) -> Path:
     candidate = Path(video_arg)
     if candidate.is_absolute():
@@ -325,6 +336,12 @@ def main() -> None:
     parser.add_argument("--fps", type=float, default=25.0)
     parser.add_argument("--train_verifier", type=int, default=0, help="1=train verifier model before step07")
     parser.add_argument("--verifier_model", type=str, default="", help="path to verifier checkpoint (.pt)")
+    parser.add_argument(
+        "--llm_student_model",
+        type=str,
+        default="auto",
+        help="student judge .joblib path; auto uses V4 default, off disables",
+    )
     parser.add_argument("--eval_target_field", type=str, default="auto")
     parser.add_argument("--calibration_target_field", type=str, default="auto")
     parser.add_argument("--calibration_prob_field", type=str, default="p_match")
@@ -447,6 +464,7 @@ def main() -> None:
     verified_events_jsonl = out_dir / "verified_events.jsonl"
     fusion_contract_report = out_dir / "fusion_contract_report.json"
     verifier_model = Path(args.verifier_model).resolve() if args.verifier_model else (out_dir / "verifier.pt")
+    llm_student_model = resolve_llm_student_model_arg(args.llm_student_model)
     verifier_report_raw = out_dir / "verifier_report.raw.json"
     verifier_samples_raw = out_dir / "verifier_samples.raw.jsonl"
     verifier_samples_train = out_dir / "verifier_samples_train.jsonl"
@@ -1355,11 +1373,15 @@ def main() -> None:
         if verifier_samples_raw.exists():
             save_training_samples(verifier_samples_train, convert_to_contract_samples(_iter_jsonl(verifier_samples_raw)))
 
+    verifier_inputs = [event_queries_for_downstream, aligned_json, pose_uq, actions_for_downstream, verifier_model]
+    if llm_student_model is not None:
+        verifier_inputs.append(llm_student_model)
+
     maybe_run(
         70,
         "dual verification",
         [verified_events_jsonl],
-        [event_queries_for_downstream, aligned_json, pose_uq, actions_for_downstream, verifier_model],
+        verifier_inputs,
         args.force,
         args.from_step,
         lambda: run_step(
@@ -1378,6 +1400,8 @@ def main() -> None:
                 str(verified_events_jsonl),
                 "--verifier_model",
                 str(verifier_model if verifier_model.exists() else ""),
+                "--llm_student_model",
+                str(llm_student_model if llm_student_model is not None else "off"),
                 "--per_person_out",
                 str(per_person_json),
                 "--validate",
@@ -1577,6 +1601,7 @@ def main() -> None:
                 "fusion_contract_report": fusion_contract_report,
                 "pipeline_contract_v2_report": pipeline_contract_report,
                 "verifier_model": verifier_model,
+                "llm_student_model": llm_student_model if llm_student_model is not None else Path("off"),
                 "verifier_eval_report": verifier_eval_report,
                 "verifier_calibration_report": verifier_calibration_report,
                 "verifier_reliability_diagram": verifier_reliability_diagram,
@@ -1615,6 +1640,7 @@ def main() -> None:
                 "sr_cache_external_command": str(args.sr_cache_external_command),
                 "sr_allow_unavailable": int(args.sr_allow_unavailable),
                 "train_verifier": int(args.train_verifier),
+                "llm_student_model": str(llm_student_model if llm_student_model is not None else "off"),
                 "action_mode": str(args.action_mode),
                 "asr_backend": str(args.asr_backend),
                 "asr_model": str(args.asr_model),
@@ -1760,6 +1786,7 @@ def main() -> None:
     print(f"Verifier calibration   : {verifier_calibration_report}")
     print(f"Reliability diagram    : {verifier_reliability_diagram}")
     print(f"Verifier model         : {verifier_model if verifier_model.exists() else 'not_used'}")
+    print(f"LLM student model      : {llm_student_model if llm_student_model is not None else 'off'}")
     print(f"Timeline chart         : {timeline_png}")
     if not args.skip_vis:
         print(f"Timeline students CSV  : {timeline_students_csv}")

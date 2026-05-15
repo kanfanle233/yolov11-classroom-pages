@@ -580,3 +580,92 @@ def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ── LLM silver label validators ─────────────────────────────────────────
+
+SILVER_LABELS = {"match", "mismatch", "uncertain"}
+
+
+def validate_llm_silver_label_record(row: JsonDict) -> Tuple[bool, str]:
+    """Validate a single LLM silver label record (judge/ pipeline output)."""
+    required = [
+        "schema_version",
+        "evidence_id",
+        "query_id",
+        "track_id",
+        "teacher_model",
+        "silver_label",
+        "silver_p_match",
+        "silver_confidence",
+        "is_simulated",
+    ]
+    ok, msg = _require_keys(row, required)
+    if not ok:
+        return False, msg
+    if not _schema_version_ok(row["schema_version"]):
+        return False, f"schema_version must be '{SCHEMA_VERSION}' or '{SCHEMA_VERSION}+*'"
+    if not _is_non_empty_str(row["evidence_id"]):
+        return False, "evidence_id must be non-empty string"
+    if not _is_non_empty_str(row["query_id"]):
+        return False, "query_id must be non-empty string"
+    if not isinstance(row["track_id"], int):
+        return False, "track_id must be int"
+    if not _is_non_empty_str(row["teacher_model"]):
+        return False, "teacher_model must be non-empty string"
+    if row["silver_label"] not in SILVER_LABELS:
+        return False, f"silver_label must be one of {sorted(SILVER_LABELS)}"
+    if not _in_01(row["silver_p_match"]):
+        return False, "silver_p_match must be in [0,1]"
+    if not _in_01(row["silver_confidence"]):
+        return False, "silver_confidence must be in [0,1]"
+    if not isinstance(row["is_simulated"], bool):
+        return False, "is_simulated must be bool"
+    return True, ""
+
+
+def validate_student_train_report(obj: Any) -> Tuple[bool, str]:
+    """Validate a student judge training report JSON."""
+    if not isinstance(obj, dict):
+        return False, "report must be object"
+    required = [
+        "kind",
+        "num_evidence_cases",
+        "num_train",
+        "num_val",
+        "label_distribution",
+        "train_metrics",
+        "val_metrics",
+        "class_balance",
+        "runtime_config",
+        "teacher_provenance",
+    ]
+    ok, msg = _require_keys(obj, required)
+    if not ok:
+        return False, msg
+    if obj["kind"] not in ("student_judge_train_report",):
+        return False, "kind must be 'student_judge_train_report'"
+    for key in ("num_evidence_cases", "num_train", "num_val"):
+        if not isinstance(obj[key], int) or obj[key] < 0:
+            return False, f"{key} must be non-negative int"
+    if not isinstance(obj["label_distribution"], dict):
+        return False, "label_distribution must be object"
+    for key in ("train_metrics", "val_metrics"):
+        m = obj[key]
+        if not isinstance(m, dict):
+            return False, f"{key} must be object"
+        for mk in ("accuracy", "brier", "ece"):
+            if mk in m and not _is_number(m[mk]):
+                return False, f"{key}.{mk} must be number"
+    if not isinstance(obj["class_balance"], dict):
+        return False, "class_balance must be object"
+    if not isinstance(obj["runtime_config"], dict):
+        return False, "runtime_config must be object"
+    teacher_prov = obj["teacher_provenance"]
+    if not isinstance(teacher_prov, dict):
+        return False, "teacher_provenance must be object"
+    if "teacher_model" not in teacher_prov:
+        return False, "teacher_provenance must contain teacher_model"
+    if not _is_non_empty_str(teacher_prov["teacher_model"]):
+        return False, "teacher_provenance.teacher_model must be non-empty string"
+    return True, ""

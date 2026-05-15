@@ -8,6 +8,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np
+
 from contracts.schemas import (
     SCHEMA_VERSION,
     validate_jsonl_file,
@@ -15,6 +17,34 @@ from contracts.schemas import (
     write_jsonl,
 )
 from verifier.model import VerifierMLP, VerifierRuntimeConfig, build_feature_vector
+
+# Student judge constants
+STUDENT_FEATURE_VERSION = "v1.0"
+STUDENT_FUSION_MODE = "llm_distilled_student_v4"
+LEGACY_STUDENT_FUSION_MODE = "llm_distilled_student"
+DEFAULT_LLM_STUDENT_MODEL = (
+    Path(__file__).resolve().parents[1]
+    / "output"
+    / "llm_judge_pipeline"
+    / "models"
+    / "student_judge_v4_best.joblib"
+)
+_STUDENT_BEHAVIOR_CODES = ["tt", "dx", "dk", "zt", "xt", "js", "zl", "jz"]
+
+
+def resolve_llm_student_model_path(value: str = "auto") -> Optional[Path]:
+    """Resolve CLI/model config for the V4 distilled student.
+
+    auto/default/v4 -> project V4 model path, off/none/false -> disabled.
+    Missing auto model is handled by the existing loader fallback.
+    """
+    text = str(value or "auto").strip()
+    lowered = text.lower()
+    if lowered in {"auto", "default", "v4"}:
+        return DEFAULT_LLM_STUDENT_MODEL.resolve()
+    if lowered in {"off", "none", "disable", "disabled", "false", "0"}:
+        return None
+    return Path(text).resolve()
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -80,13 +110,27 @@ def _load_uq_index(path: Optional[Path]) -> Dict[int, float]:
     return {tid: (sum(vals) / len(vals) if vals else 0.5) for tid, vals in by_track.items()}
 
 
-def _load_model(model_path: Optional[Path]) -> Tuple[Optional[VerifierMLP], VerifierRuntimeConfig]:
+VALID_KINDS = {"trainable_verifier", "student_judge_v1"}
+
+
+def _load_model(model_path: Optional[Path]) -> Tuple[Optional[VerifierMLP], VerifierRuntimeConfig, Dict[str, Any]]:
+    """Load a verifier or student judge checkpoint.
+
+    Returns (model, runtime_cfg, teacher_provenance).
+    teacher_provenance is empty dict for trainable_verifier kind.
+    """
     runtime_cfg = VerifierRuntimeConfig()
+    teacher_provenance: Dict[str, Any] = {}
     if model_path is None or (not model_path.exists()):
-        return None, runtime_cfg
+        return None, runtime_cfg, teacher_provenance
     ckpt = torch.load(model_path, map_location="cpu")
     if not isinstance(ckpt, dict):
-        return None, runtime_cfg
+        return None, runtime_cfg, teacher_provenance
+
+    kind = ckpt.get("kind", "trainable_verifier")
+    if kind not in VALID_KINDS:
+        print(f"[WARN] unknown checkpoint kind '{kind}', treating as trainable_verifier")
+        kind = "trainable_verifier"
 
     in_dim = int(ckpt.get("in_dim", 4))
     hidden_dim = int(ckpt.get("hidden_dim", 16))
@@ -94,13 +138,109 @@ def _load_model(model_path: Optional[Path]) -> Tuple[Optional[VerifierMLP], Veri
     if isinstance(ckpt.get("runtime_config"), dict):
         runtime_cfg = VerifierRuntimeConfig.from_dict(ckpt["runtime_config"])
     if not isinstance(state_dict, dict):
-        return None, runtime_cfg
+        return None, runtime_cfg, teacher_provenance
 
     model = VerifierMLP(in_dim=in_dim, hidden_dim=hidden_dim)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
-    return model, runtime_cfg
 
+    if kind == "student_judge_v1":
+        teacher_provenance = ckpt.get("teacher_provenance", {})
+        model._teacher_provenance = teacher_provenance
+
+    return model, runtime_cfg, teacher_provenance
+
+
+# ── Student judge feature builder ─────────────────────────────────────
+
+def _build_student_features(
+    *,
+    event_type: str,
+    query_text: str,
+    cand: Dict[str, Any],
+    query_source: str = "unknown",
+    audio_confidence: float = 0.0,
+) -> np.ndarray:
+    """Build the 16-dim feature vector expected by the student judge model.
+
+    Feature order must match exactly with feature_names used during training:
+      [overlap, action_confidence, uq_score, text_score, audio_confidence,
+       stability_score,
+       behavior_code_tt, dx, dk, zt, xt, js, zl, jz,
+       event_type_known, query_source_asr]
+    """
+    overlap = _safe_float(cand.get("overlap", 0.0), 0.0)
+    action_conf = _safe_float(cand.get("action_confidence", cand.get("confidence", 0.0)), 0.0)
+    uq = _safe_float(cand.get("uq_score", cand.get("uq_track", 0.5)), 0.5)
+    action_label = str(cand.get("semantic_id", cand.get("action", ""))).strip().lower()
+
+    feat = build_feature_vector(
+        event_type=event_type,
+        query_text=query_text,
+        action_label=action_label,
+        overlap=overlap,
+        action_confidence=action_conf,
+        uq_score=uq,
+    )
+    text_score = feat[2]
+    stability = 1.0 - uq
+    behavior_code = str(cand.get("behavior_code", "")).strip().lower()
+
+    row = [
+        overlap,
+        action_conf,
+        uq,
+        text_score,
+        _safe_float(audio_confidence, 0.0),
+        min(1.0, max(0.0, stability)),
+    ]
+    # behavior_code one-hot
+    for code in _STUDENT_BEHAVIOR_CODES:
+        row.append(1.0 if behavior_code == code else 0.0)
+    # event_type_known
+    et = str(event_type or "").strip().lower()
+    row.append(0.0 if et in ("", "unknown") else 1.0)
+    # query_source_asr
+    qs = str(query_source or "").strip().lower()
+    row.append(1.0 if qs == "asr" else 0.0)
+
+    return np.array([row], dtype=np.float64)
+
+
+def _load_student_judge(model_path: Optional[Path]) -> Any:
+    """Load a sklearn student judge model from a joblib file.
+
+    Returns None if the model cannot be loaded (file missing, bad format, etc.).
+    """
+    if model_path is None or not model_path.exists():
+        return None
+    try:
+        import joblib as _jl
+        ckpt = _jl.load(model_path)
+        if not isinstance(ckpt, dict) or "model" not in ckpt:
+            print(f"[WARN] student model {model_path} has no 'model' key", file=sys.stderr)
+            return None
+        model = ckpt["model"]
+        # Verify it has predict_proba
+        if not hasattr(model, "predict_proba"):
+            print(f"[WARN] student model {model_path} lacks predict_proba", file=sys.stderr)
+            return None
+        # Attach scaler and metadata for forward pass
+        model._student_scaler = ckpt.get("scaler")
+        model._student_feature_names = ckpt.get("feature_names", [])
+        model._student_classes = ckpt.get("classes", [])
+        model._student_model_name = ckpt.get("model_name", "unknown")
+        model._student_path = str(model_path)
+        model._teacher_source = ckpt.get("teacher_source", "")
+        model._teacher_dataset = ckpt.get("teacher_dataset", "")
+        model._evaluation_kind = ckpt.get("evaluation_kind", "")
+        return model
+    except Exception as e:
+        print(f"[WARN] failed to load student judge {model_path}: {e}", file=sys.stderr)
+        return None
+
+
+# ── Core prediction ────────────────────────────────────────────────────
 
 def _predict_one(
     *,
@@ -110,6 +250,10 @@ def _predict_one(
     query_text: str,
     cand: Dict[str, Any],
     uq_default: float,
+    query_source: str = "unknown",
+    audio_confidence: float = 0.0,
+    student_model: Any = None,
+    student_feature_version: str = STUDENT_FEATURE_VERSION,
 ) -> Dict[str, Any]:
     overlap = _safe_float(cand.get("overlap", 0.0), 0.0)
     action_conf = _safe_float(cand.get("action_confidence", cand.get("confidence", 0.0)), 0.0)
@@ -134,14 +278,72 @@ def _predict_one(
     text_score = feat[2]
     visual_score = _clamp01(0.65 * feat[0] + 0.35 * feat[1])
 
+    # === Confidence-Weighted Dynamic Late Fusion ===
+    # Reference: Kiziltepe et al. (IEEE Access 2024); CMU-MMAC Survey (arXiv 2025)
+    # Key insight: modality weights adapt to real-time confidence, not fixed 0.55/0.45
+    is_visual_fallback = "fallback" in str(query_source).lower()
+    has_real_audio = (
+        audio_confidence > 0.0
+        and not is_visual_fallback
+        and str(query_source).strip().lower() not in ("unknown", "placeholder", "fallback", "")
+    )
+
+    if has_real_audio:
+        # Dynamic modality weights: tracking stability vs audio quality
+        w_visual = _clamp01(1.0 - uq)           # lower uncertainty = higher visual weight
+        w_audio  = _clamp01(audio_confidence)    # ASR quality as audio weight
+        p_match = _clamp01(
+            (w_visual * visual_score + w_audio * text_score) / (w_visual + w_audio + 1e-9)
+        )
+        fusion_mode = "audio_visual_dynamic"
+    elif is_visual_fallback:
+        # Visual fallback: no real audio, don't fake text_score contribution
+        p_match = visual_score
+        text_score = float('nan')  # mark as not applicable
+        fusion_mode = "visual_only_fallback"
+    else:
+        # No audio available at all
+        p_match = visual_score
+        fusion_mode = "visual_only"
+
+    # Override: if MLP model is provided, use it (trained on gold labels)
     if model is not None:
         x = torch.tensor([feat], dtype=torch.float32)
         with torch.no_grad():
             logits = model(x).squeeze(0)
         p_match = float(torch.sigmoid(logits / max(1e-6, runtime_cfg.temperature)).item())
-    else:
-        # Fallback heuristic when no trained model is provided.
-        p_match = _clamp01(0.55 * visual_score + 0.45 * text_score)
+        fusion_mode = "mlp_trained"
+
+    # Override: if student judge model is provided, use it
+    # Student takes priority over both heuristic and MLP
+    if student_model is not None:
+        fallback_fusion_mode = fusion_mode
+        try:
+            X_student = _build_student_features(
+                event_type=event_type,
+                query_text=query_text,
+                cand=cand,
+                query_source=query_source,
+                audio_confidence=audio_confidence,
+            )
+            scaler = getattr(student_model, "_student_scaler", None)
+            if scaler is not None:
+                X_student = scaler.transform(X_student)
+
+            probs = student_model.predict_proba(X_student)[0]  # [p_match, p_mismatch, p_uncertain]
+            # Classes are ["match", "mismatch", "uncertain"] in that order
+            if len(probs) >= 3:
+                p_match = float(probs[0])  # match probability
+            else:
+                p_match = float(probs[0])
+
+            # Clamp
+            p_match = _clamp01(p_match)
+            fusion_mode = STUDENT_FUSION_MODE
+        except Exception as e:
+            print(f"[WARN] student judge inference failed: {e}, falling back", file=sys.stderr)
+            # Keep the previous p_match and its exact fallback fusion mode.
+            fusion_mode = fallback_fusion_mode
 
     p_mismatch = _clamp01(1.0 - p_match)
     reliability = _clamp01(p_match * (1.0 - runtime_cfg.uq_gate * _clamp01(uq)))
@@ -153,6 +355,18 @@ def _predict_one(
     else:
         label = "mismatch"
 
+    # Student model metadata
+    student_model_path = ""
+    student_feature_ver = ""
+    teacher_source = ""
+    teacher_dataset = ""
+    if student_model is not None and fusion_mode in (STUDENT_FUSION_MODE, LEGACY_STUDENT_FUSION_MODE):
+        student_model_path = getattr(student_model, "_student_path", "")
+        student_model_name = getattr(student_model, "_student_model_name", "")
+        student_feature_ver = student_feature_version
+        teacher_source = getattr(student_model, "_teacher_source", "") or ""
+        teacher_dataset = getattr(student_model, "_teacher_dataset", "") or ""
+
     return {
         "p_match": p_match,
         "p_mismatch": p_mismatch,
@@ -162,6 +376,13 @@ def _predict_one(
         "visual_score": visual_score,
         "text_score": text_score,
         "uq_score": _clamp01(uq),
+        "fusion_mode": fusion_mode,
+        "student_model_path": student_model_path,
+        "student_feature_version": student_feature_ver,
+        "teacher_source": teacher_source,
+        "teacher_dataset": teacher_dataset,
+        "w_visual": _clamp01(1.0 - uq) if has_real_audio else 1.0,
+        "w_audio": _clamp01(audio_confidence) if has_real_audio else 0.0,
         "action": action_label,
         "raw_action": raw_action,
         "behavior_code": behavior_code,
@@ -182,14 +403,29 @@ def infer_verified_rows(
     pose_uq_path: Optional[Path],
     model_path: Optional[Path],
     keep_all_candidates: bool = False,
+    llm_student_model_path: Optional[Path] = None,
+    student_feature_version: str = STUDENT_FEATURE_VERSION,
 ) -> List[Dict[str, Any]]:
     queries = _load_jsonl(event_queries_path)
     q_index = {str(q.get("query_id", q.get("event_id", ""))): q for q in queries}
     aligned_obj = _load_json(aligned_path)
     aligned = aligned_obj if isinstance(aligned_obj, list) else []
     uq_index = _load_uq_index(pose_uq_path)
-    model, runtime_cfg = _load_model(model_path)
+    model, runtime_cfg, teacher_provenance = _load_model(model_path)
     threshold_source = "model_runtime_config" if model is not None else "heuristic_default"
+
+    # Build model_version from provenance (for student judge) or default
+    if teacher_provenance and teacher_provenance.get("teacher_model"):
+        model_version = f"student_judge:{teacher_provenance['teacher_model']}"
+    elif model is not None:
+        model_version = "verifier_mlp_trained"
+    else:
+        model_version = "heuristic_v1"
+
+    # Load student judge model (sklearn joblib)
+    student_model = _load_student_judge(llm_student_model_path)
+    if student_model is not None:
+        model_version = f"student_judge:{getattr(student_model, '_student_model_name', 'sklearn')}"
 
     rows: List[Dict[str, Any]] = []
     for block in aligned:
@@ -199,6 +435,8 @@ def infer_verified_rows(
         query = q_index.get(query_id, {})
         event_type = str(query.get("event_type", block.get("event_type", "unknown")))
         query_text = str(query.get("query_text", block.get("query_text", "")))
+        query_source = str(query.get("source", block.get("source", "unknown")))
+        audio_conf = _safe_float(query.get("confidence", 0.0), 0.0)
         window = block.get("window", {})
         if not isinstance(window, dict):
             window = {
@@ -226,6 +464,10 @@ def infer_verified_rows(
                 query_text=query_text,
                 cand=cand,
                 uq_default=uq_default,
+                query_source=query_source,
+                audio_confidence=audio_conf,
+                student_model=student_model,
+                student_feature_version=student_feature_version,
             )
             scored.append((cand, score))
         scored.sort(key=lambda x: x[1]["reliability_score"], reverse=True)
@@ -253,14 +495,47 @@ def infer_verified_rows(
                 "semantic_label_en": "",
                 "taxonomy_version": "",
                 "threshold_source": threshold_source,
+                "model_version": model_version,
                 "runtime_config": runtime_cfg.to_dict(),
-                "evidence": {"visual_score": 0.0, "text_score": 0.0, "uq_score": 1.0},
+                "evidence": {"visual_score": 0.0, "text_score": 0.0, "uq_score": 1.0, "fusion_mode": "no_candidates", "w_visual": 1.0, "w_audio": 0.0},
             }
+            # Tag with student model info if loaded
+            if student_model is not None:
+                sm_path = getattr(student_model, "_student_path", "")
+                if sm_path:
+                    row["evidence"]["student_model_path"] = sm_path
+                    row["evidence"]["student_feature_version"] = student_feature_version
+                ts_src = getattr(student_model, "_teacher_source", "") or ""
+                ts_ds = getattr(student_model, "_teacher_dataset", "") or ""
+                if ts_src:
+                    row["evidence"]["teacher_source"] = ts_src
+                if ts_ds:
+                    row["evidence"]["teacher_dataset"] = ts_ds
             rows.append(row)
             continue
 
         selected = scored if keep_all_candidates else [scored[0]]
         for cand, score in selected:
+            # Build evidence block with student model metadata
+            evidence = {
+                "visual_score": float(score.get("visual_score", 0.0)),
+                "text_score": float(score.get("text_score", 0.0)) if not (isinstance(score.get("text_score"), float) and score["text_score"] != score["text_score"]) else None,
+                "uq_score": float(score.get("uq_score", 0.0)),
+                "fusion_mode": str(score.get("fusion_mode", "unknown")),
+                "w_visual": float(score.get("w_visual", 1.0)),
+                "w_audio": float(score.get("w_audio", 0.0)),
+            }
+            sm_path = str(score.get("student_model_path", ""))
+            sm_fv = str(score.get("student_feature_version", ""))
+            ts_src = str(score.get("teacher_source", ""))
+            ts_ds = str(score.get("teacher_dataset", ""))
+            if sm_path:
+                evidence["student_model_path"] = sm_path
+                evidence["student_feature_version"] = sm_fv
+            if ts_src:
+                evidence["teacher_source"] = ts_src
+            if ts_ds:
+                evidence["teacher_dataset"] = ts_ds
             row = {
                 "schema_version": SCHEMA_VERSION,
                 "query_id": query_id,
@@ -283,12 +558,9 @@ def infer_verified_rows(
                 "semantic_label_en": str(score.get("semantic_label_en", "")),
                 "taxonomy_version": str(score.get("taxonomy_version", "")),
                 "threshold_source": threshold_source,
+                "model_version": model_version,
                 "runtime_config": score["runtime_config"],
-                "evidence": {
-                    "visual_score": float(score["visual_score"]),
-                    "text_score": float(score["text_score"]),
-                    "uq_score": float(score["uq_score"]),
-                },
+                "evidence": evidence,
             }
             rows.append(row)
     return rows
@@ -299,7 +571,11 @@ def main() -> None:
     parser.add_argument("--event_queries", required=True, type=str)
     parser.add_argument("--aligned", required=True, type=str)
     parser.add_argument("--pose_uq", default="", type=str)
-    parser.add_argument("--model", default="", type=str, help="verifier.pt")
+    parser.add_argument("--model", default="", type=str, help="verifier.pt (MLP)")
+    parser.add_argument("--llm_student_model", default="auto", type=str,
+                        help="student judge .joblib model path; auto uses V4 default, off disables")
+    parser.add_argument("--llm_student_features", default=STUDENT_FEATURE_VERSION, type=str,
+                        help=f"student feature version (default: {STUDENT_FEATURE_VERSION})")
     parser.add_argument("--out", required=True, type=str)
     parser.add_argument("--keep_all_candidates", type=int, default=0)
     parser.add_argument("--validate", type=int, default=1)
@@ -309,6 +585,7 @@ def main() -> None:
     aligned = Path(args.aligned).resolve()
     pose_uq = Path(args.pose_uq).resolve() if args.pose_uq else None
     model = Path(args.model).resolve() if args.model else None
+    llm_student_model = resolve_llm_student_model_path(args.llm_student_model)
     out = Path(args.out).resolve()
 
     rows = infer_verified_rows(
@@ -317,6 +594,8 @@ def main() -> None:
         pose_uq_path=pose_uq,
         model_path=model,
         keep_all_candidates=bool(int(args.keep_all_candidates)),
+        llm_student_model_path=llm_student_model,
+        student_feature_version=str(args.llm_student_features),
     )
     write_jsonl(out, rows)
 
